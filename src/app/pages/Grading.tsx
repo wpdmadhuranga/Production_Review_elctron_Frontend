@@ -1,8 +1,38 @@
 import { CalendarIcon, CheckCircle, Save, Trash2, X } from "lucide-react";
 import React, { useState } from "react";
+import { useAuth } from "../auth/useAuth";
 import { useMeta } from "../context/MetaContext";
+import { batchCreateProductionRecords } from "../services/productionService";
 
 interface MetaItem { id: number; name: string }
+
+function decodeJwtPayload(token?: string | null): any | null {
+  if (!token) return null;
+  try {
+    const payload = token.split(".")[1];
+    if (!payload) return null;
+    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const json = decodeURIComponent(
+      atob(base64)
+        .split("")
+        .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+        .join("")
+    );
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function getUserIdFromToken(token?: string | null): number | null {
+  if (!token) return null;
+  const payload = decodeJwtPayload(token);
+  if (!payload) return null;
+
+  const candidate = payload.sub ?? payload.userId ?? payload.id ?? payload.nameid ?? payload.uid;
+  const id = candidate ? Number(candidate) : NaN;
+  return Number.isFinite(id) ? id : null;
+}
 
 interface DefectEntry {
   id: string;
@@ -61,6 +91,14 @@ export function Grading() {
 
   // Metadata from context (fetched once at app startup, cached in localStorage)
   const { tyreItems, lines, moldNumbers, shifts, defects, operators, loading: metaLoading } = useMeta();
+  const { token } = useAuth();
+  const userId = getUserIdFromToken(token) ?? 1; // fallback to 1 if token doesn't include an ID
+  const createdBy = String(userId);
+
+  const getMetaName = (list: MetaItem[], value: string | number) => {
+    const found = list.find((it) => String(it.id) === String(value));
+    return found ? found.name : String(value);
+  };
 
   // Defect Form State
   const [defectForm, setDefectForm] = useState(EMPTY_DEFECT_FORM);
@@ -68,9 +106,9 @@ export function Grading() {
 
   // Product Form State
   const [productForm, setProductForm] = useState({
-    productType: '',
+    productType: '', // tyreItem id
     quantity: '',
-    lineNumber: '',
+    lineNumber: '', // line id
     batchNumber: '',
     totalTyre: '',
     shift: '',
@@ -104,12 +142,11 @@ export function Grading() {
 
   // Add Product Entry
   const addProductEntry = () => {
-
     const newEntry: ProductEntry = {
       id: Date.now().toString(),
-      productType: productForm.productType,
+      productType: productForm.productType, // stored as tyreItem id
       quantity: Number(productForm.quantity),
-      lineNumber: productForm.lineNumber,
+      lineNumber: productForm.lineNumber, // stored as line id
       batchNumber: productForm.batchNumber,
       shift: productForm.shift,
       totalTyre: Number(productForm.totalTyre),
@@ -171,8 +208,15 @@ export function Grading() {
     setSummaryEntries(summaryEntries.filter(entry => entry.id !== id));
   };
 
+  const getLineActualTotal = (lineId: number) =>
+    productEntries.reduce((sum, pe) => {
+      return String(pe.lineNumber) === String(lineId)
+        ? sum + Number(pe.totalTyre)
+        : sum;
+    }, 0);
+
   // Submit all records
-  const submitAllRecords = () => {
+  const submitAllRecords = async () => {
     if (productEntries.length === 0) {
       alert('Please add at least one Total Product Entry before submitting.');
       return;
@@ -187,17 +231,85 @@ export function Grading() {
       return;
     }
 
-    const allData = {
-      defects: defectEntries,
-      products: productEntries,
-      summary: {
-        linePlans: lines.map((_, i) => Number(summaryForm.linePlans[i] || 0)),
-        lineActuals: lines.map((_, i) => Number(summaryForm.lineActuals[i] || 0)),
-      },
+    const shift = summaryForm.shift || (shifts[0]?.name ?? "Morning");
+    const productionDateIso = new Date(summaryForm.date).toISOString();
+
+    const lookupMetaId = (list: MetaItem[], value: string | number): number => {
+      const match = list.find(
+        (m) => String(m.id) === String(value) || String(m.name) === String(value)
+      );
+      return match?.id ?? 0;
     };
 
-    console.log('Submitting all records:', allData);
-    alert(`Submitting ${defectEntries.length} defect entries, ${productEntries.length} product entries, and production summary to backend.`);
+    const payload = lines.map((line, i) => {
+      const plannedTotalTyres = Number(summaryForm.linePlans[i] || 0);
+      const actualTotalTyres = getLineActualTotal(line.id);
+
+      const productEntriesForLine = productEntries.filter((pe) => {
+        return String(pe.lineNumber) === String(line.id);
+      });
+
+      const tyreItemsForLine = defectEntries.filter((de) => {
+        return String(de.productionLine) === String(line.id);
+      });
+
+      return {
+        lineNumberId: line.id,
+        shift,
+        productionDate: productionDateIso,
+        createdBy,
+        plannedTotalTyres,
+        actualTotalTyres,
+        productEntries: productEntriesForLine.map((pe) => {
+          const tyreTypeId = Number(pe.productType);
+          return {
+            tyreTypeId: Number.isFinite(tyreTypeId) && tyreTypeId > 0
+              ? tyreTypeId
+              : lookupMetaId(tyreItems, pe.productType),
+            totalProduction: Number(pe.totalTyre),
+          };
+        }),
+        tyreItems: tyreItemsForLine.map((de) => {
+          const tyreTypeIdFromEntry = Number(de.tyreItem);
+          const moldNumberIdFromEntry = Number(de.moldNumber);
+
+          const matchingProductEntry = productEntriesForLine.find((pe) =>
+            String(pe.productType) === String(de.tyreItem) ||
+            String(pe.productType) === String(lookupMetaId(tyreItems, de.tyreItem))
+          );
+
+          return {
+            serialNumber: de.serialNumber,
+            operatorNumber: Number(de.operatorNumber) || 0,
+            userId,
+            createdBy,
+            defect: de.defect,
+            cOrD: de.defectClass || "C",
+            tyreTypeId:
+              Number.isFinite(tyreTypeIdFromEntry) && tyreTypeIdFromEntry > 0
+                ? tyreTypeIdFromEntry
+                : lookupMetaId(tyreItems, de.tyreItem),
+            moldNumberId:
+              Number.isFinite(moldNumberIdFromEntry) && moldNumberIdFromEntry > 0
+                ? moldNumberIdFromEntry
+                : lookupMetaId(moldNumbers, de.moldNumber),
+            totalProduction: matchingProductEntry ? Number(matchingProductEntry.totalTyre) : 1,
+          };
+        }),
+      };
+    });
+
+    try {
+      const resp = await batchCreateProductionRecords(payload);
+      console.log("Batch create response", resp);
+      alert("Submitted successfully.");
+      setDefectEntries([]);
+      setProductEntries([]);
+      setSummaryEntries([]);
+    } catch (err: any) {
+      console.error("Batch create failed", err);
+      alert(`Failed to submit records: ${err?.message ?? err}`);
+    }
   };
 
   const totalEntries = defectEntries.length + productEntries.length + summaryEntries.length;
@@ -301,7 +413,7 @@ export function Grading() {
                   >
                     <option value="" style={{ color: '#6b7280' }}>Select Tyre Item</option>
                     {tyreItems.map(item => (
-                      <option key={item.id} value={item.name} style={{ color: '#111827' }}>{item.name}</option>
+                      <option key={item.id} value={String(item.id)} style={{ color: '#111827' }}>{item.name}</option>
                     ))}
                   </select>
                 </div>
@@ -319,7 +431,7 @@ export function Grading() {
                   >
                     <option value="" style={{ color: '#6b7280' }}>Select Production Line</option>
                     {lines.map(item => (
-                      <option key={item.id} value={item.name} style={{ color: '#111827' }}>{item.name}</option>
+                      <option key={item.id} value={String(item.id)} style={{ color: '#111827' }}>{item.name}</option>
                     ))}
                   </select>
                 </div>
@@ -478,10 +590,10 @@ export function Grading() {
                         {defectEntries.map((entry) => (
                           <tr key={entry.id} className="hover:bg-gray-50">
                             <td className="px-4 py-3 text-sm text-gray-900">{entry.date}</td>
-                            <td className="px-4 py-3 text-sm text-gray-900">{entry.tyreItem}</td>
-                            <td className="px-4 py-3 text-sm text-gray-900">{entry.productionLine}</td>
+                            <td className="px-4 py-3 text-sm text-gray-900">{getMetaName(tyreItems, entry.tyreItem)}</td>
+                            <td className="px-4 py-3 text-sm text-gray-900">{getMetaName(lines, entry.productionLine)}</td>
                             <td className="px-4 py-3 text-sm text-gray-900">{entry.serialNumber}</td>
-                            <td className="px-4 py-3 text-sm text-gray-900">{entry.moldNumber}</td>
+                            <td className="px-4 py-3 text-sm text-gray-900">{getMetaName(moldNumbers, entry.moldNumber)}</td>
                             <td className="px-4 py-3 text-sm text-gray-900">{entry.shift}</td>
                             <td className="px-4 py-3 text-sm text-gray-900">{entry.defect}</td>
                             <td className="px-4 py-3 text-sm">
@@ -527,7 +639,24 @@ export function Grading() {
                   >
                     <option value="" style={{ color: '#6b7280' }}>Select Tyre Type</option>
                     {tyreItems.map(item => (
-                      <option key={item.id} value={item.name} style={{ color: '#111827' }}>{item.name}</option>
+                      <option key={item.id} value={String(item.id)} style={{ color: '#111827' }}>{item.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Production Line <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={productForm.lineNumber}
+                    onChange={(e) => setProductForm({ ...productForm, lineNumber: e.target.value })}
+                    onClick={() => console.log('lines', lines, 'length', lines.length, 'metaLoading', metaLoading)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                  >
+                    <option value="" style={{ color: '#6b7280' }}>Select Line Number</option>
+                    {lines.map(item => (
+                      <option key={item.id} value={String(item.id)} style={{ color: '#111827' }}>{item.name}</option>
                     ))}
                   </select>
                 </div>
@@ -582,6 +711,7 @@ export function Grading() {
                     <table className="w-full">
                       <thead className="bg-gray-50">
                         <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">Line</th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">Product Type</th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">Total Tyre</th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">Shift</th>
@@ -591,9 +721,10 @@ export function Grading() {
                       <tbody className="divide-y divide-gray-200">
                         {productEntries.map((entry) => (
                           <tr key={entry.id} className="hover:bg-gray-50">
-                            <td className="px-4 py-3 text-sm text-gray-900">{entry.productType}</td>
-                              <td className="px-4 py-3 text-sm text-gray-900">{entry.totalTyre}</td>
-                              <td className="px-4 py-3 text-sm text-gray-900">{entry.shift}</td>
+                            <td className="px-4 py-3 text-sm text-gray-900">{getMetaName(lines, entry.lineNumber)}</td>
+                            <td className="px-4 py-3 text-sm text-gray-900">{getMetaName(tyreItems, entry.productType)}</td>
+                            <td className="px-4 py-3 text-sm text-gray-900">{entry.totalTyre}</td>
+                            <td className="px-4 py-3 text-sm text-gray-900">{entry.shift}</td>
                             <td className="px-4 py-3 text-sm">
                               <button
                                 onClick={() => deleteProductEntry(entry.id)}
@@ -662,23 +793,15 @@ export function Grading() {
                     {/* ACTUAL Row */}
                     <tr className="border-t border-gray-300">
                       <td className="px-4 py-3 font-semibold text-gray-900 bg-gray-50 border-r border-gray-300">ACTUAL</td>
-                      {lines.map((line, i) => (
+                      {lines.map((line) => (
                         <td key={line.id} className="px-2 py-2 border-r border-gray-300">
-                          <input
-                            type="number"
-                            value={summaryForm.lineActuals[i] ?? ''}
-                            onChange={(e) => {
-                              const next = [...summaryForm.lineActuals];
-                              next[i] = e.target.value;
-                              setSummaryForm({ ...summaryForm, lineActuals: next });
-                            }}
-                            className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-center"
-                            placeholder="0"
-                          />
+                          <span className="w-full px-3 py-2 text-center font-semibold text-gray-900 block">
+                            {getLineActualTotal(line.id)}
+                          </span>
                         </td>
                       ))}
                       <td className="px-4 py-3 text-center font-semibold text-gray-900 bg-blue-50">
-                        {lines.length > 0 ? lines.reduce((sum, _, i) => sum + Number(summaryForm.lineActuals[i] || 0), 0) : '-'}
+                        {lines.length > 0 ? lines.reduce((sum, line) => sum + getLineActualTotal(line.id), 0) : '-'}
                       </td>
                     </tr>
 
@@ -687,7 +810,7 @@ export function Grading() {
                       <td className="px-4 py-3 font-semibold text-gray-900 bg-gray-50 border-r border-gray-300">EFFICIENCY</td>
                       {lines.map((line, i) => {
                         const plan = Number(summaryForm.linePlans[i] || 0);
-                        const actual = Number(summaryForm.lineActuals[i] || 0);
+                        const actual = getLineActualTotal(line.id);
                         const eff = plan > 0 ? (actual / plan) * 100 : 0;
                         return (
                           <td key={line.id} className="px-4 py-3 text-center border-r border-gray-300">
@@ -705,7 +828,7 @@ export function Grading() {
                         {lines.length > 0 && (
                           (() => {
                             const summaryPlan = lines.reduce((s, _, i) => s + Number(summaryForm.linePlans[i] || 0), 0);
-                            const summaryActual = lines.reduce((s, _, i) => s + Number(summaryForm.lineActuals[i] || 0), 0);
+                            const summaryActual = lines.reduce((s, line) => s + getLineActualTotal(line.id), 0);
                             if (summaryPlan === 0) return '-';
                             const summaryEff = (summaryActual / summaryPlan) * 100;
                             return <span className={`font-semibold ${summaryEff >= 90 ? 'text-green-600' : summaryEff >= 75 ? 'text-yellow-600' : 'text-red-600'}`}>{summaryEff.toFixed(1)}%</span>;
