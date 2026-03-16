@@ -1,5 +1,8 @@
 import { AlertCircle, Calendar, CheckCircle2, Package, Search, TrendingUp } from "lucide-react";
 import { useState } from "react";
+import { useMeta } from "../../context/MetaContext";
+import { getProductionReportFilter } from "../../services/productionService";
+import { computeAggregatesFromBatches, groupTyreItemsByType, safePercent, TyreTypeRow } from "../../utils/reportUtils";
 
 interface DefectBreakdown {
   airBubble: number;
@@ -25,78 +28,35 @@ export function Summary() {
   const [duration, setDuration] = useState('today');
   const [showResults, setShowResults] = useState(false);
 
-  // Mock data for tire items
-  const [tyreData, setTyreData] = useState<TyreItem[]>([
-    { 
-      tyreItem: '195/65R15', 
-      totalTyres: 1250, 
-      totalDefects: 45,
-      defects: { airBubble: 12, sidewall: 8, treadCrack: 5, centerMarking: 7, lateralDamage: 9, underBlister: 4 },
-      gradeC: 1050,
-      gradeD: 200
-    },
-    { 
-      tyreItem: '205/55R16', 
-      totalTyres: 980, 
-      totalDefects: 32,
-      defects: { airBubble: 8, sidewall: 6, treadCrack: 4, centerMarking: 5, lateralDamage: 6, underBlister: 3 },
-      gradeC: 820,
-      gradeD: 160
-    },
-    { 
-      tyreItem: '225/45R17', 
-      totalTyres: 1420, 
-      totalDefects: 78,
-      defects: { airBubble: 18, sidewall: 15, treadCrack: 12, centerMarking: 10, lateralDamage: 14, underBlister: 9 },
-      gradeC: 980,
-      gradeD: 440
-    },
-    { 
-      tyreItem: '235/60R18', 
-      totalTyres: 890, 
-      totalDefects: 28,
-      defects: { airBubble: 7, sidewall: 5, treadCrack: 3, centerMarking: 4, lateralDamage: 6, underBlister: 3 },
-      gradeC: 750,
-      gradeD: 140
-    },
-    { 
-      tyreItem: '245/40R19', 
-      totalTyres: 1150, 
-      totalDefects: 65,
-      defects: { airBubble: 15, sidewall: 12, treadCrack: 9, centerMarking: 8, lateralDamage: 13, underBlister: 8 },
-      gradeC: 850,
-      gradeD: 300
-    },
-    { 
-      tyreItem: '215/60R16', 
-      totalTyres: 1320, 
-      totalDefects: 41,
-      defects: { airBubble: 10, sidewall: 8, treadCrack: 6, centerMarking: 6, lateralDamage: 7, underBlister: 4 },
-      gradeC: 1120,
-      gradeD: 200
-    },
-    { 
-      tyreItem: '185/70R14', 
-      totalTyres: 760, 
-      totalDefects: 52,
-      defects: { airBubble: 14, sidewall: 10, treadCrack: 8, centerMarking: 7, lateralDamage: 9, underBlister: 4 },
-      gradeC: 540,
-      gradeD: 220
-    },
-    { 
-      tyreItem: '255/35R20', 
-      totalTyres: 540, 
-      totalDefects: 19,
-      defects: { airBubble: 5, sidewall: 3, treadCrack: 2, centerMarking: 3, lateralDamage: 4, underBlister: 2 },
-      gradeC: 460,
-      gradeD: 80
-    },
-  ]);
+  const [tyreData, setTyreData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSearch = () => {
     setShowResults(true);
-    // Here you would fetch data based on date range and duration
-    console.log('Searching from:', dateFrom, 'to:', dateTo, 'duration:', duration);
+    setError(null);
+    (async () => {
+      try {
+        setLoading(true);
+        // send dateFrom as start of day and dateTo fixed as requested
+        const isoFrom = `${dateFrom}T00:00:00Z`;
+        const isoTo = `2026-03-15T23:59:59Z`;
+        const resp = await getProductionReportFilter({ dateFrom: isoFrom, dateTo: isoTo });
+        // Attempt to map response to TyreItem[] shape. Adjust as necessary for actual API shape.
+        if (Array.isArray(resp)) {
+          setTyreData(resp as TyreItem[]);
+        } else if (resp && resp.items && Array.isArray(resp.items)) {
+          setTyreData(resp.items as TyreItem[]);
+        } else {
+          setTyreData([]);
+        }
+      } catch (err: any) {
+        console.error('Failed to fetch production report filter', err);
+        setError(err?.message ?? String(err));
+      } finally {
+        setLoading(false);
+      }
+    })();
   };
 
   const handleDurationChange = (selectedDuration: string) => {
@@ -130,21 +90,31 @@ export function Summary() {
     }
   };
 
-  // Calculate summary statistics
-  const totalTyres = tyreData.reduce((sum, item) => sum + item.totalTyres, 0);
-  const totalDefects = tyreData.reduce((sum, item) => sum + item.totalDefects, 0);
-  const totalGradeC = tyreData.reduce((sum, item) => sum + item.gradeC, 0);
-  const totalGradeD = tyreData.reduce((sum, item) => sum + item.gradeD, 0);
-  const defectRate = ((totalDefects / totalTyres) * 100).toFixed(2);
-  const qualityRate = (100 - parseFloat(defectRate)).toFixed(2);
+  // Calculate summary statistics via report utils
+  // `tyreData` here contains API batches; use utils to compute aggregates and grouping
+  const aggregates = computeAggregatesFromBatches(tyreData as any);
+  const grouped = groupTyreItemsByType(tyreData as any) as TyreTypeRow[];
+  const { tyreItems } = useMeta();
 
-  // Calculate total defects by type
-  const totalAirBubble = tyreData.reduce((sum, item) => sum + item.defects.airBubble, 0);
-  const totalSidewall = tyreData.reduce((sum, item) => sum + item.defects.sidewall, 0);
-  const totalTreadCrack = tyreData.reduce((sum, item) => sum + item.defects.treadCrack, 0);
-  const totalCenterMarking = tyreData.reduce((sum, item) => sum + item.defects.centerMarking, 0);
-  const totalLateralDamage = tyreData.reduce((sum, item) => sum + item.defects.lateralDamage, 0);
-  const totalUnderBlister = tyreData.reduce((sum, item) => sum + item.defects.underBlister, 0);
+  const totalTyres = aggregates.totalTyres;
+  const totalDefects = aggregates.defectCount;
+  const totalGradeC = aggregates.totalGradeC;
+  const totalGradeD = aggregates.totalGradeD;
+  const defectRate = safePercent(aggregates.defectRatePct);
+  const qualityRate = safePercent(aggregates.qualityRatePct);
+
+  const getMetaName = (list: { id: number; name: string }[], value: string | number) => {
+    const found = list.find((it) => String(it.id) === String(value));
+    return found ? found.name : String(value);
+  };
+
+  // defect breakdown - try to pull common keys or show the map values
+  const totalAirBubble = aggregates.defectsByType["airBubble"] || aggregates.defectsByType["AirBubble"] || aggregates.defectsByType["AIRBUBBLE"] || 0;
+  const totalSidewall = aggregates.defectsByType["sidewall"] || 0;
+  const totalTreadCrack = aggregates.defectsByType["treadCrack"] || 0;
+  const totalCenterMarking = aggregates.defectsByType["centerMarking"] || 0;
+  const totalLateralDamage = aggregates.defectsByType["lateralDamage"] || 0;
+  const totalUnderBlister = aggregates.defectsByType["underBlister"] || 0;
 
   return (
     <div className="p-8">
@@ -323,43 +293,47 @@ export function Summary() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200">
-                  {tyreData.map((item, index) => (
+                  {grouped.length > 0 ? grouped.map((row, index) => (
                     <tr key={index} className="hover:bg-gray-50">
                       <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 border-r border-gray-200">
-                        {item.tyreItem}
+                            {getMetaName(tyreItems, row.tyreTypeId) ?? row.tyreTypeName ?? String(row.tyreTypeId)}
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-center text-gray-900 font-semibold border-r border-gray-200">
-                        {item.totalTyres.toLocaleString()}
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-center text-gray-900 font-semibold border-r border-gray-200">
+                              {row.producedTotal ? Number(row.producedTotal).toLocaleString() : '-'}
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-center border-r border-gray-200">
-                        <span className="text-red-600 font-semibold">{item.totalDefects}</span>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-center border-r border-gray-200">
+                          <span className="text-red-600 font-semibold">{row.totalDefects}</span>
                       </td>
-                      <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
-                        {item.defects.airBubble}
+                        <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
+                          {row.defects.airBubble || 0}
                       </td>
-                      <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
-                        {item.defects.sidewall}
+                        <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
+                          {row.defects.sidewall || 0}
                       </td>
-                      <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
-                        {item.defects.treadCrack}
+                        <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
+                          {row.defects.treadCrack || 0}
                       </td>
-                      <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
-                        {item.defects.centerMarking}
+                        <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
+                          {row.defects.centerMarking || 0}
                       </td>
-                      <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
-                        {item.defects.lateralDamage}
+                        <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
+                          {row.defects.lateralDamage || 0}
                       </td>
-                      <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
-                        {item.defects.underBlister}
+                        <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
+                          {row.defects.underBlister || 0}
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-center bg-green-50 border-r border-gray-200">
-                        <span className="text-green-700 font-semibold">{item.gradeC}</span>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-center bg-green-50 border-r border-gray-200">
+                          <span className="text-green-700 font-semibold">{row.gradeC}</span>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-center bg-yellow-50">
-                        <span className="text-yellow-700 font-semibold">{item.gradeD}</span>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-center bg-yellow-50">
+                          <span className="text-yellow-700 font-semibold">{row.gradeD}</span>
                       </td>
-                    </tr>
-                  ))}
+                      </tr>
+                    )) : (
+                      <tr>
+                        <td colSpan={11} className="px-4 py-6 text-center text-sm text-gray-500">No tyre items found for selected filters.</td>
+                      </tr>
+                    )}
                 </tbody>
                 <tfoot className="bg-blue-50 border-t-2 border-blue-300">
                   <tr>

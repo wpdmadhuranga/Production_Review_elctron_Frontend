@@ -222,12 +222,14 @@ export function Grading() {
       return;
     }
 
-    const allPlansFilled = lines.length > 0 && lines.every((_, i) => {
+    const allRequiredPlansFilled = lines.length > 0 && lines.every((line, i) => {
+      const actual = getLineActualTotal(line.id);
+      if (!actual || actual === 0) return true; // no actuals for this line -> plan not required
       const val = summaryForm.linePlans[i];
       return val !== undefined && val !== '' && Number(val) > 0;
     });
-    if (!allPlansFilled) {
-      alert('Please fill in the Plan value for all production lines in the Production Summary.');
+    if (!allRequiredPlansFilled) {
+      alert('Please fill in the Plan value for production lines that have Actual production in the Production Summary.');
       return;
     }
 
