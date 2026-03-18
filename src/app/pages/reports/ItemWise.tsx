@@ -1,5 +1,8 @@
 import { AlertCircle, Calendar, CheckCircle2, ChevronDown, Package, Search, TrendingUp } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useMeta } from "../../context/MetaContext";
+import { getProductionReportFilter } from "../../services/productionService";
+import { normalizeDefectKey } from "../../utils/reportUtils";
 
 interface DefectData {
   defectName: string;
@@ -18,38 +21,21 @@ export function ItemWise() {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [showResults, setShowResults] = useState(false);
 
-  // Available tire types
-  const tyreTypes = [
-    '195/65R15',
-    '205/55R16',
-    '225/45R17',
-    '235/60R18',
-    '245/40R19',
-    '215/60R16',
-    '185/70R14',
-    '255/35R20',
-    '265/70R17',
-    '275/40R20',
-  ];
+  // Tyre types and defects come from meta (which loads from localStorage)
+  const { tyreItems, defects } = useMeta();
+  const tyreTypes = tyreItems.map((t) => t.name);
 
   // Filter tire types based on search
   const filteredTyreTypes = useMemo(() => {
-    return tyreTypes.filter(type => 
-      type.toLowerCase().includes(searchTerm.toLowerCase())
+    return tyreTypes.filter((type) =>
+      String(type).toLowerCase().includes(searchTerm.toLowerCase())
     );
   }, [searchTerm]);
 
   // Mock data for defects by tire type
   const getDefectDataByTyreType = (tyreType: string): DefectData[] => {
-    // This would normally come from your backend based on the selected tire type
-    return [
-      { defectName: 'Air.Ble (Air Bubble)', totalTyres: 1250, gradeC: 1050, gradeD: 200, percentage: 3.6 },
-      { defectName: 'S.W (Sidewall)', totalTyres: 1250, gradeC: 1050, gradeD: 200, percentage: 2.4 },
-      { defectName: 'Tr.Cr (Tread Crack)', totalTyres: 1250, gradeC: 1050, gradeD: 200, percentage: 1.6 },
-      { defectName: 'C.Mr (Center Marking)', totalTyres: 1250, gradeC: 1050, gradeD: 200, percentage: 2.0 },
-      { defectName: 'L.Dam (Lateral Damage)', totalTyres: 1250, gradeC: 1050, gradeD: 200, percentage: 2.8 },
-      { defectName: 'Un.Bl (Under Blister)', totalTyres: 1250, gradeC: 1050, gradeD: 200, percentage: 1.2 },
-    ];
+    // placeholder — actual data built from API in handleSearch
+    return [];
   };
 
   const [defectData, setDefectData] = useState<DefectData[]>([]);
@@ -59,10 +45,81 @@ export function ItemWise() {
       alert('Please select a tire type');
       return;
     }
-    setShowResults(true);
-    const data = getDefectDataByTyreType(selectedTyreType);
-    setDefectData(data);
-    console.log('Searching for tire type:', selectedTyreType, 'from:', dateFrom, 'to:', dateTo);
+    (async () => {
+      try {
+        setShowResults(true);
+        const tyreMeta = tyreItems.find((t) => t.name === selectedTyreType);
+        const tyreId = tyreMeta?.id;
+        const isoFrom = `${dateFrom}T00:00:00Z`;
+        const isoTo = `${dateTo}T23:59:59Z`;
+        const resp = await getProductionReportFilter({ dateFrom: isoFrom, dateTo: isoTo });
+        const batches = Array.isArray(resp) ? resp : resp?.items ?? [];
+
+        // collect all tyre items from batches and records
+        const items: any[] = [];
+        for (const b of batches) {
+          if (Array.isArray(b.tyreItems)) items.push(...b.tyreItems);
+          if (Array.isArray((b as any).records)) {
+            for (const r of (b as any).records) {
+              if (Array.isArray(r.tyreItems)) items.push(...r.tyreItems);
+            }
+          }
+        }
+
+        // filter by selected tyre id (if available), otherwise attempt match by tyreTypeName
+        const filtered = items.filter((it) => {
+          if (tyreId != null) return String(it.tyreTypeId) === String(tyreId);
+          // fallback: match by name in case server returns tyreTypeName
+          return String(it.tyreTypeName || it.tyreItem || '').toLowerCase().includes(selectedTyreType.toLowerCase());
+        });
+
+        const totalTyresForType = filtered.length;
+
+        const defectMap: Record<string, { name: string; total: number; gradeC: number; gradeD: number }> = {};
+        const metaDefects = (defects || []).map((d) => ({ key: normalizeDefectKey(d.name), label: d.name }));
+
+        for (const it of filtered) {
+          const raw = (it.defect || '').toString();
+          const key = normalizeDefectKey(raw);
+          if (!key) continue;
+          if (!defectMap[key]) {
+            // try to find label from meta
+            const m = metaDefects.find((md) => md.key === key);
+            defectMap[key] = { name: m ? m.label : raw || key, total: 0, gradeC: 0, gradeD: 0 };
+          }
+          defectMap[key].total += 1;
+          const cd = (it.cOrD || '').toUpperCase();
+          if (cd === 'C') defectMap[key].gradeC += 1;
+          if (cd === 'D') defectMap[key].gradeD += 1;
+        }
+
+        // build array preserving order from meta.defects, then append any unknown defects
+        const orderedKeys = (defects || []).map((d) => normalizeDefectKey(d.name));
+        const result: DefectData[] = [];
+        for (const k of orderedKeys) {
+          const v = defectMap[k];
+          result.push({
+            defectName: v?.name ?? (k || ''),
+            totalTyres: v?.total ?? 0,
+            gradeC: v?.gradeC ?? 0,
+            gradeD: v?.gradeD ?? 0,
+            percentage: totalTyresForType > 0 ? ((v?.total ?? 0) / totalTyresForType) * 100 : 0,
+          });
+        }
+        // append defects not in meta
+        for (const k of Object.keys(defectMap)) {
+          if (orderedKeys.includes(k)) continue;
+          const v = defectMap[k];
+          result.push({ defectName: v.name, totalTyres: v.total, gradeC: v.gradeC, gradeD: v.gradeD, percentage: totalTyresForType > 0 ? (v.total / totalTyresForType) * 100 : 0 });
+        }
+
+        setDefectData(result);
+        console.log('Searching for tire type:', selectedTyreType, 'from:', dateFrom, 'to:', dateTo, 'found', totalTyresForType);
+      } catch (err: any) {
+        console.error('Failed fetching production filter for itemwise', err);
+        alert(err?.message ?? String(err));
+      }
+    })();
   };
 
   const handleDurationChange = (selectedDuration: string) => {

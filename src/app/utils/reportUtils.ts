@@ -61,7 +61,7 @@ export function computeAggregatesFromBatches(batches: ProductionBatchApi[] = [])
       const raw = (it.defect || '').toString().trim();
       const isRealDefect = raw !== '' && raw.toLowerCase() !== 'none';
       if (!isRealDefect) continue;
-      const d = raw.toLowerCase();
+      const d = normalizeDefectKey(raw);
       defectsByType[d] = (defectsByType[d] || 0) + 1;
       defectCount += 1;
       const cd = (it.cOrD || '').toUpperCase();
@@ -104,6 +104,34 @@ export function computeAggregatesFromBatches(batches: ProductionBatchApi[] = [])
   };
 }
 
+export function normalizeDefectKey(raw: string): string {
+  const s = raw.toLowerCase().trim();
+  // remove punctuation and spaces
+  const key = s.replace(/[^a-z0-9]/g, '');
+  switch (key) {
+    case 'airbubble':
+      return 'airBubble';
+    case 'sidewall':
+      return 'sidewall';
+    case 'treadcrack':
+      return 'treadCrack';
+    case 'centermarking':
+      return 'centerMarking';
+    case 'lateraldamage':
+      return 'lateralDamage';
+    case 'underblister':
+      return 'underBlister';
+    case 'ucure':
+    case 'undercure':
+      return 'underCure';
+    case 'ovcure':
+    case 'overcure':
+      return 'overCure';
+    default:
+      return key; // fallback to cleaned key
+  }
+}
+
 export interface TyreTypeRow {
   tyreTypeId: number | string;
   tyreTypeName?: string;
@@ -138,7 +166,7 @@ export function groupTyreItemsByType(batches: ProductionBatchApi[] = []): TyreTy
       const raw = (it.defect || '').toString().trim();
       const isRealDefect = raw !== '' && raw.toLowerCase() !== 'none';
       if (isRealDefect) {
-        const d = raw.toLowerCase();
+        const d = normalizeDefectKey(raw);
         row.defects[d] = (row.defects[d] || 0) + 1;
         row.totalDefects += 1;
         const cd = (it.cOrD || '').toUpperCase();

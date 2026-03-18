@@ -11,6 +11,8 @@ interface DefectBreakdown {
   centerMarking: number;
   lateralDamage: number;
   underBlister: number;
+  underCure: number;
+  overCure: number;
 }
 
 interface TyreItem {
@@ -37,10 +39,15 @@ export function Summary() {
     setError(null);
     (async () => {
       try {
-        setLoading(true);
-        // send dateFrom as start of day and dateTo fixed as requested
+        // send dateFrom as start of day and dateTo as end of selected day
         const isoFrom = `${dateFrom}T00:00:00Z`;
-        const isoTo = `2026-03-15T23:59:59Z`;
+        const isoTo = `${dateTo}T23:59:59Z`;
+        // validate selected range
+        if (new Date(isoFrom) > new Date(isoTo)) {
+          setError('`dateFrom` must be on or before `dateTo`');
+          return;
+        }
+        setLoading(true);
         const resp = await getProductionReportFilter({ dateFrom: isoFrom, dateTo: isoTo });
         // Attempt to map response to TyreItem[] shape. Adjust as necessary for actual API shape.
         if (Array.isArray(resp)) {
@@ -94,7 +101,64 @@ export function Summary() {
   // `tyreData` here contains API batches; use utils to compute aggregates and grouping
   const aggregates = computeAggregatesFromBatches(tyreData as any);
   const grouped = groupTyreItemsByType(tyreData as any) as TyreTypeRow[];
-  const { tyreItems } = useMeta();
+  const { tyreItems, defects } = useMeta();
+
+  // canonical defect keys in display order
+  const defectOrder = [
+    'airBubble',
+    'sidewall',
+    'treadCrack',
+    'centerMarking',
+    'lateralDamage',
+    'underBlister',
+    'underCure',
+    'overCure',
+  ];
+
+  const normalizeKey = (raw: string) => {
+    const s = (raw || '').toString().toLowerCase().trim();
+    const key = s.replace(/[^a-z0-9]/g, '');
+    switch (key) {
+      case 'airbubble':
+        return 'airBubble';
+      case 'sidewall':
+        return 'sidewall';
+      case 'treadcrack':
+        return 'treadCrack';
+      case 'centermarking':
+        return 'centerMarking';
+      case 'lateraldamage':
+        return 'lateralDamage';
+      case 'underblister':
+        return 'underBlister';
+      case 'ucure':
+      case 'undercure':
+        return 'underCure';
+      case 'ovcure':
+      case 'overcure':
+        return 'overCure';
+      default:
+        return key;
+    }
+  };
+
+  const getDefectLabel = (canonical: string) => {
+    // try to find a matching defect meta entry to use its label
+    const found = (defects || []).find((d) => normalizeKey(d.name) === canonical);
+    if (found && found.name) return found.name;
+    // fallback short labels
+    const fallback: Record<string, string> = {
+      airBubble: 'Air.Ble',
+      sidewall: 'S.W',
+      treadCrack: 'Tr.Cr',
+      centerMarking: 'C.Mr',
+      lateralDamage: 'L.Dam',
+      underBlister: 'Un.Bl',
+      underCure: 'U.Cure',
+      overCure: 'Ov.Cure',
+    };
+    return fallback[canonical] || canonical;
+  };
 
   const totalTyres = aggregates.totalTyres;
   const totalDefects = aggregates.defectCount;
@@ -115,6 +179,8 @@ export function Summary() {
   const totalCenterMarking = aggregates.defectsByType["centerMarking"] || 0;
   const totalLateralDamage = aggregates.defectsByType["lateralDamage"] || 0;
   const totalUnderBlister = aggregates.defectsByType["underBlister"] || 0;
+  const totalUnderCure = aggregates.defectsByType["underCure"] || aggregates.defectsByType["UnderCure"] || aggregates.defectsByType["UNDERCURE"] || 0;
+  const totalOverCure = aggregates.defectsByType["overCure"] || aggregates.defectsByType["OverCure"] || aggregates.defectsByType["OVERCURE"] || 0;
 
   return (
     <div className="p-8">
@@ -266,24 +332,11 @@ export function Summary() {
                     <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">
                       Defects
                     </th>
-                    <th className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">
-                      Air.Ble
-                    </th>
-                    <th className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">
-                      S.W
-                    </th>
-                    <th className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">
-                      Tr.Cr
-                    </th>
-                    <th className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">
-                      C.Mr
-                    </th>
-                    <th className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">
-                      L.Dam
-                    </th>
-                    <th className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">
-                      Un.Bl
-                    </th>
+                        {defectOrder.map((d) => (
+                          <th key={d} className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">
+                            {getDefectLabel(d)}
+                          </th>
+                        ))}
                     <th className="px-4 py-3 text-center text-xs font-medium text-green-700 uppercase tracking-wider bg-green-50 border-r border-gray-300">
                       C
                     </th>
@@ -304,24 +357,11 @@ export function Summary() {
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-center border-r border-gray-200">
                           <span className="text-red-600 font-semibold">{row.totalDefects}</span>
                       </td>
-                        <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
-                          {row.defects.airBubble || 0}
-                      </td>
-                        <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
-                          {row.defects.sidewall || 0}
-                      </td>
-                        <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
-                          {row.defects.treadCrack || 0}
-                      </td>
-                        <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
-                          {row.defects.centerMarking || 0}
-                      </td>
-                        <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
-                          {row.defects.lateralDamage || 0}
-                      </td>
-                        <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
-                          {row.defects.underBlister || 0}
-                      </td>
+                      {defectOrder.map((k) => (
+                        <td key={k} className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">
+                          {row.defects[k] || 0}
+                        </td>
+                      ))}
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-center bg-green-50 border-r border-gray-200">
                           <span className="text-green-700 font-semibold">{row.gradeC}</span>
                       </td>
@@ -329,9 +369,9 @@ export function Summary() {
                           <span className="text-yellow-700 font-semibold">{row.gradeD}</span>
                       </td>
                       </tr>
-                    )) : (
+                      )) : (
                       <tr>
-                        <td colSpan={11} className="px-4 py-6 text-center text-sm text-gray-500">No tyre items found for selected filters.</td>
+                        <td colSpan={13} className="px-4 py-6 text-center text-sm text-gray-500">No tyre items found for selected filters.</td>
                       </tr>
                     )}
                 </tbody>
@@ -359,9 +399,11 @@ export function Summary() {
                     <td className="px-3 py-4 text-sm text-center font-bold text-gray-900 border-r border-gray-300">
                       {totalLateralDamage}
                     </td>
-                    <td className="px-3 py-4 text-sm text-center font-bold text-gray-900 border-r border-gray-300">
-                      {totalUnderBlister}
-                    </td>
+                    {defectOrder.map((k) => (
+                      <td key={k} className="px-3 py-4 text-sm text-center font-bold text-gray-900 border-r border-gray-300">
+                        {aggregates.defectsByType[k] || 0}
+                      </td>
+                    ))}
                     <td className="px-4 py-4 text-sm text-center font-bold text-green-700 bg-green-100 border-r border-gray-300">
                       {totalGradeC}
                     </td>
