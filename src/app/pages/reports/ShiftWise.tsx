@@ -1,5 +1,8 @@
 import { AlertCircle, Calendar, CheckCircle2, Package, Search, TrendingUp } from "lucide-react";
 import { useState } from "react";
+import { useMeta } from "../../context/MetaContext";
+import { getProductionReportFilter } from "../../services/productionService";
+import { normalizeDefectKey } from "../../utils/reportUtils";
 
 interface DefectBreakdown {
   airBubble: number;
@@ -26,16 +29,136 @@ export function ShiftWise() {
   const [shift, setShift] = useState('all');
   const [showResults, setShowResults] = useState(false);
 
-  const [tyreData] = useState<TyreItem[]>([
-    { tyreItem: '195/65R15', totalTyres: 1250, totalDefects: 45, defects: { airBubble: 12, sidewall: 8, treadCrack: 5, centerMarking: 7, lateralDamage: 9, underBlister: 4 }, gradeC: 1050, gradeD: 200 },
-    { tyreItem: '205/55R16', totalTyres: 980, totalDefects: 32, defects: { airBubble: 8, sidewall: 6, treadCrack: 4, centerMarking: 5, lateralDamage: 6, underBlister: 3 }, gradeC: 820, gradeD: 160 },
-    { tyreItem: '225/45R17', totalTyres: 1420, totalDefects: 78, defects: { airBubble: 18, sidewall: 15, treadCrack: 12, centerMarking: 10, lateralDamage: 14, underBlister: 9 }, gradeC: 980, gradeD: 440 },
-    { tyreItem: '235/60R18', totalTyres: 890, totalDefects: 28, defects: { airBubble: 7, sidewall: 5, treadCrack: 3, centerMarking: 4, lateralDamage: 6, underBlister: 3 }, gradeC: 750, gradeD: 140 },
-  ]);
+  const [tyreData, setTyreData] = useState<TyreItem[]>([]);
+  const [producedSum, setProducedSum] = useState<number>(0);
+  const { tyreItems, shifts, defects } = useMeta();
+
+  const norm = (v: any) => String(v ?? '').trim().toLowerCase();
+  const getShiftCode = (selected: string) => {
+    if (selected === 'all') return undefined;
+    const found = (shifts || []).find((s: any) => norm(s?.code) === norm(selected) || norm(s?.name) === norm(selected));
+    return (found?.code ?? found?.name ?? selected) as string;
+  };
+
+  const defectKeys = ['airBubble', 'sidewall', 'treadCrack', 'centerMarking', 'lateralDamage', 'underBlister'];
+  const defectCols = defectKeys.map((k) => {
+    const m = (defects || []).find((d: any) => normalizeDefectKey(d.name) === k);
+    const fallback: Record<string, string> = { airBubble: 'Air.Ble', sidewall: 'S.W', treadCrack: 'Tr.Cr', centerMarking: 'C.Mr', lateralDamage: 'L.Dam', underBlister: 'Un.Bl' };
+    return { key: k, label: m?.name ?? fallback[k] };
+  });
 
   const handleSearch = () => {
-    setShowResults(true);
-    console.log('Searching shift:', shift, 'from:', dateFrom, 'to:', dateTo, 'duration:', duration);
+    (async () => {
+      try {
+        setShowResults(true);
+        const isoFrom = `${dateFrom}T00:00:00Z`;
+        const isoTo = `${dateTo}T23:59:59Z`;
+        const selectedShiftCode = getShiftCode(shift);
+        const shiftMatch = (candidate: any) => {
+          if (!selectedShiftCode) return true;
+          const c = norm(candidate);
+          return c === norm(selectedShiftCode) || c === norm(shift);
+        };
+
+        const resp = await getProductionReportFilter({ dateFrom: isoFrom, dateTo: isoTo, shift: selectedShiftCode });
+        const batches = Array.isArray(resp) ? resp : resp?.items ?? [];
+
+        // collect tyre items and sum productEntries per tyreTypeId
+        const items: any[] = [];
+        let sumProd = 0;
+        const prodMap: Record<string, number> = {};
+        for (const b of batches) {
+          if (Array.isArray((b as any).records)) {
+            for (const r of (b as any).records) {
+              if (Array.isArray(r.productEntries)) {
+                if (shiftMatch(r.shift)) {
+                  for (const pe of r.productEntries) {
+                    const tid = pe?.tyreTypeId != null ? String(pe.tyreTypeId) : String(pe?.tyreTypeName || 'unknown');
+                    const val = Number(pe?.totalProduction || 0);
+                    prodMap[tid] = (prodMap[tid] || 0) + val;
+                    sumProd += val;
+                  }
+                }
+              }
+            }
+          }
+          if (Array.isArray(b.tyreItems)) {
+            for (const ti of b.tyreItems) {
+              if (shiftMatch(ti.shift)) items.push(ti);
+            }
+          }
+          if (Array.isArray((b as any).records)) {
+            for (const r of (b as any).records) {
+              if (Array.isArray(r.tyreItems)) {
+                for (const ti of r.tyreItems) {
+                  if (shiftMatch(ti.shift ?? r.shift)) items.push(ti);
+                }
+              }
+            }
+          }
+        }
+
+        // aggregate by tyreTypeId (or tyreTypeName)
+        const map: Record<string, TyreItem> = {};
+        for (const it of items) {
+          const tid = it.tyreTypeId != null ? String(it.tyreTypeId) : (it.tyreTypeName || it.tyreItem || 'unknown');
+          if (!map[tid]) {
+            map[tid] = { tyreItem: tid, totalTyres: 0, totalDefects: 0, defects: { airBubble: 0, sidewall: 0, treadCrack: 0, centerMarking: 0, lateralDamage: 0, underBlister: 0 }, gradeC: 0, gradeD: 0 };
+          }
+          const row = map[tid];
+          row.totalTyres += 1;
+          const raw = (it.defect || '').toString();
+          const isReal = raw !== '' && raw.toLowerCase() !== 'none';
+          if (isReal) {
+            row.totalDefects += 1;
+            const key = normalizeDefectKey(raw);
+            switch (key) {
+              case 'airBubble': row.defects.airBubble++; break;
+              case 'sidewall': row.defects.sidewall++; break;
+              case 'treadCrack': row.defects.treadCrack++; break;
+              case 'centerMarking': row.defects.centerMarking++; break;
+              case 'lateralDamage': row.defects.lateralDamage++; break;
+              case 'underBlister': row.defects.underBlister++; break;
+              default: break;
+            }
+          }
+          const cd = (it.cOrD || '').toUpperCase();
+          if (cd === 'C') row.gradeC += 1;
+          if (cd === 'D') row.gradeD += 1;
+        }
+
+        // map to tyreItems metadata order, prefer production totals from productEntries
+        const result: TyreItem[] = [];
+        const used = new Set<string>();
+        if (Array.isArray(tyreItems)) {
+          for (const meta of tyreItems) {
+            const key = meta.id != null ? String(meta.id) : String(meta.name);
+            const found = map[key];
+            if (found) {
+              const total = prodMap[key] ?? found.totalTyres;
+              result.push({ ...found, tyreItem: meta.name, totalTyres: total });
+              used.add(key);
+            } else {
+              result.push({ tyreItem: meta.name, totalTyres: prodMap[key] ?? 0, totalDefects: 0, defects: { airBubble:0, sidewall:0, treadCrack:0, centerMarking:0, lateralDamage:0, underBlister:0 }, gradeC:0, gradeD:0 });
+            }
+          }
+        }
+        // append any leftover types from map not in metadata
+        for (const k of Object.keys(map)) {
+          if (used.has(k)) continue;
+          const r = map[k];
+          const total = prodMap[k] ?? r.totalTyres;
+          result.push({ ...r, tyreItem: r.tyreItem, totalTyres: total });
+        }
+
+        setTyreData(result);
+        setProducedSum(sumProd);
+        console.log('Searching shift:', shift, 'from:', dateFrom, 'to:', dateTo, 'items:', items.length, 'producedSum:', sumProd);
+      } catch (err: any) {
+        console.error('Failed shift-wise report', err);
+        alert(err?.message ?? String(err));
+      }
+    })();
   };
 
   const handleDurationChange = (selectedDuration: string) => {
@@ -69,13 +192,8 @@ export function ShiftWise() {
     }
   };
 
-  // Simple aggregation for displayed data (no real shift filtering here; simulate by selection)
-  const filteredData = shift === 'all' ? tyreData : tyreData.filter((_, i) => {
-    // deterministic distribution: shift1 -> even indexes, shift2 -> indexes %3 ===1, shift3 -> rest
-    if (shift === 'shift1') return i % 2 === 0;
-    if (shift === 'shift2') return i % 3 === 1;
-    return i % 2 !== 0 && i % 3 !== 1;
-  });
+  // Display data already filtered/aggregated by selected shift in `handleSearch`
+  const filteredData = tyreData;
 
   const totalTyres = filteredData.reduce((sum, item) => sum + item.totalTyres, 0);
   const totalDefects = filteredData.reduce((sum, item) => sum + item.totalDefects, 0);
@@ -124,9 +242,11 @@ export function ShiftWise() {
             <label className="block text-sm font-medium text-gray-700 mb-2">Shift</label>
             <select value={shift} onChange={(e) => setShift(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none">
               <option value="all">All Shifts</option>
-              <option value="shift1">Shift 1 — Morning</option>
-              <option value="shift2">Shift 2 — Afternoon</option>
-              <option value="shift3">Shift 3 — Night</option>
+              {(shifts || []).map((s: any) => {
+                const value = s.code ?? s.name;
+                const label = s.code && s.name && s.code !== s.name ? `${s.code} (${s.name})` : (s.name ?? s.code);
+                return <option key={s.id ?? value} value={value}>{label}</option>;
+              })}
             </select>
           </div>
 
@@ -147,8 +267,8 @@ export function ShiftWise() {
                 <span className="text-sm font-medium text-gray-700">Total Production</span>
                 <Package size={20} className="text-blue-600" />
               </div>
-              <p className="text-3xl font-bold text-gray-900">{totalTyres.toLocaleString()}</p>
-              <p className="text-xs text-gray-600 mt-1">Tires produced ({shift === 'all' ? 'All Shifts' : shift})</p>
+              <p className="text-3xl font-bold text-gray-900">{producedSum.toLocaleString()}</p>
+              <p className="text-xs text-gray-600 mt-1">Tires produced from product entries ({shift === 'all' ? 'All Shifts' : shift})</p>
             </div>
 
             <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-lg shadow-sm border border-green-200 p-5">
@@ -197,12 +317,9 @@ export function ShiftWise() {
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">Tire Item</th>
                     <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">Total Tires</th>
                     <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">Defects</th>
-                    <th className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">Air.Ble</th>
-                    <th className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">S.W</th>
-                    <th className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">Tr.Cr</th>
-                    <th className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">C.Mr</th>
-                    <th className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">L.Dam</th>
-                    <th className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">Un.Bl</th>
+                    {defectCols.map((d) => (
+                      <th key={d.key} className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider border-r border-gray-300">{d.label}</th>
+                    ))}
                     <th className="px-4 py-3 text-center text-xs font-medium text-green-700 uppercase tracking-wider bg-green-50 border-r border-gray-300">C</th>
                     <th className="px-4 py-3 text-center text-xs font-medium text-yellow-700 uppercase tracking-wider bg-yellow-50">D</th>
                   </tr>
@@ -213,12 +330,9 @@ export function ShiftWise() {
                       <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 border-r border-gray-200">{item.tyreItem}</td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-center text-gray-900 font-semibold border-r border-gray-200">{item.totalTyres.toLocaleString()}</td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-center border-r border-gray-200"><span className="text-red-600 font-semibold">{item.totalDefects}</span></td>
-                      <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">{item.defects.airBubble}</td>
-                      <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">{item.defects.sidewall}</td>
-                      <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">{item.defects.treadCrack}</td>
-                      <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">{item.defects.centerMarking}</td>
-                      <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">{item.defects.lateralDamage}</td>
-                      <td className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">{item.defects.underBlister}</td>
+                      {defectCols.map((d) => (
+                        <td key={d.key} className="px-3 py-3 whitespace-nowrap text-sm text-center text-gray-700 border-r border-gray-200">{(item.defects as any)[d.key]}</td>
+                      ))}
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-center bg-green-50 border-r border-gray-200"><span className="text-green-700 font-semibold">{item.gradeC}</span></td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-center bg-yellow-50"><span className="text-yellow-700 font-semibold">{item.gradeD}</span></td>
                     </tr>
@@ -229,12 +343,9 @@ export function ShiftWise() {
                     <td className="px-4 py-4 text-sm font-bold text-gray-900 border-r border-gray-300">TOTAL</td>
                     <td className="px-4 py-4 text-sm text-center font-bold text-gray-900 border-r border-gray-300">{totalTyres.toLocaleString()}</td>
                     <td className="px-4 py-4 text-sm text-center font-bold text-red-600 border-r border-gray-300">{totalDefects}</td>
-                    <td className="px-3 py-4 text-sm text-center font-bold text-gray-900 border-r border-gray-300">{filteredData.reduce((s, it) => s + it.defects.airBubble, 0)}</td>
-                    <td className="px-3 py-4 text-sm text-center font-bold text-gray-900 border-r border-gray-300">{filteredData.reduce((s, it) => s + it.defects.sidewall, 0)}</td>
-                    <td className="px-3 py-4 text-sm text-center font-bold text-gray-900 border-r border-gray-300">{filteredData.reduce((s, it) => s + it.defects.treadCrack, 0)}</td>
-                    <td className="px-3 py-4 text-sm text-center font-bold text-gray-900 border-r border-gray-300">{filteredData.reduce((s, it) => s + it.defects.centerMarking, 0)}</td>
-                    <td className="px-3 py-4 text-sm text-center font-bold text-gray-900 border-r border-gray-300">{filteredData.reduce((s, it) => s + it.defects.lateralDamage, 0)}</td>
-                    <td className="px-3 py-4 text-sm text-center font-bold text-gray-900 border-r border-gray-300">{filteredData.reduce((s, it) => s + it.defects.underBlister, 0)}</td>
+                    {defectCols.map((d) => (
+                      <td key={d.key} className="px-3 py-4 text-sm text-center font-bold text-gray-900 border-r border-gray-300">{filteredData.reduce((s, it) => s + ((it.defects as any)[d.key] || 0), 0)}</td>
+                    ))}
                     <td className="px-4 py-4 text-sm text-center font-bold text-green-700 bg-green-100 border-r border-gray-300">{totalGradeC}</td>
                     <td className="px-4 py-4 text-sm text-center font-bold text-yellow-700 bg-yellow-100">{totalGradeD}</td>
                   </tr>

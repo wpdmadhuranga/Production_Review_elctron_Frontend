@@ -1,4 +1,4 @@
-import { AlertCircle, Calendar, CheckCircle2, ChevronDown, Package, Search, TrendingUp } from "lucide-react";
+import { Calendar, ChevronDown, Package, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useMeta } from "../../context/MetaContext";
 import { getProductionReportFilter } from "../../services/productionService";
@@ -39,6 +39,8 @@ export function ItemWise() {
   };
 
   const [defectData, setDefectData] = useState<DefectData[]>([]);
+  const [producedTotal, setProducedTotal] = useState<number>(0);
+  const [producedSum, setProducedSum] = useState<number>(0);
 
   const handleSearch = () => {
     if (!selectedTyreType) {
@@ -52,7 +54,9 @@ export function ItemWise() {
         const tyreId = tyreMeta?.id;
         const isoFrom = `${dateFrom}T00:00:00Z`;
         const isoTo = `${dateTo}T23:59:59Z`;
-        const resp = await getProductionReportFilter({ dateFrom: isoFrom, dateTo: isoTo });
+        const opts: any = { dateFrom: isoFrom, dateTo: isoTo };
+        if (tyreId != null) opts.tyreTypeId = tyreId;
+        const resp = await getProductionReportFilter(opts);
         const batches = Array.isArray(resp) ? resp : resp?.items ?? [];
 
         // collect all tyre items from batches and records
@@ -74,6 +78,24 @@ export function ItemWise() {
         });
 
         const totalTyresForType = filtered.length;
+        setProducedTotal(totalTyresForType);
+
+        // sum productEntries.totalProduction for the selected tyre type
+        let prodSum = 0;
+        if (tyreId != null) {
+          for (const b of batches) {
+            if (!Array.isArray((b as any).records)) continue;
+            for (const r of (b as any).records) {
+              if (!Array.isArray(r.productEntries)) continue;
+              for (const p of r.productEntries) {
+                if (String(p.tyreTypeId) === String(tyreId)) {
+                  prodSum += Number(p.totalProduction || 0);
+                }
+              }
+            }
+          }
+        }
+        setProducedSum(prodSum);
 
         const defectMap: Record<string, { name: string; total: number; gradeC: number; gradeD: number }> = {};
         const metaDefects = (defects || []).map((d) => ({ key: normalizeDefectKey(d.name), label: d.name }));
@@ -160,12 +182,10 @@ export function ItemWise() {
   };
 
   // Calculate summary statistics
-  const totalTyres = defectData.length > 0 ? defectData[0].totalTyres : 0;
-  const totalGradeC = defectData.length > 0 ? defectData[0].gradeC : 0;
-  const totalGradeD = defectData.length > 0 ? defectData[0].gradeD : 0;
-  const totalDefectPercentage = defectData.reduce((sum, item) => sum + item.percentage, 0);
-  const qualityRate = (100 - totalDefectPercentage).toFixed(2);
-  const defectRate = totalDefectPercentage.toFixed(2);
+  const totalTyres = producedTotal;
+  const totalGradeC = defectData.reduce((s, item) => s + item.gradeC, 0);
+  const totalGradeD = defectData.reduce((s, item) => s + item.gradeD, 0);
+  const totalDefectCount = defectData.reduce((s, item) => s + item.totalTyres, 0);
 
   return (
     <div className="p-8">
@@ -290,61 +310,15 @@ export function ItemWise() {
       {/* Results Section */}
       {showResults && (
         <div>
-          {/* Summary Statistics - Above Table */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-            {/* Total Production */}
+          {/* Summary: show total production (from productEntries) */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
             <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg shadow-sm border border-blue-200 p-5">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm font-medium text-gray-700">Total Production</span>
                 <Package size={20} className="text-blue-600" />
               </div>
-              <p className="text-3xl font-bold text-gray-900">{totalTyres.toLocaleString()}</p>
-              <p className="text-xs text-gray-600 mt-1">Tires of {selectedTyreType}</p>
-            </div>
-
-            {/* Quality Rate */}
-            <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-lg shadow-sm border border-green-200 p-5">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-gray-700">Quality Rate</span>
-                <CheckCircle2 size={20} className="text-green-600" />
-              </div>
-              <p className="text-3xl font-bold text-green-600">{qualityRate}%</p>
-              <p className="text-xs text-gray-600 mt-1">Good quality tires</p>
-            </div>
-
-            {/* Defect Rate */}
-            <div className="bg-gradient-to-br from-red-50 to-red-100 rounded-lg shadow-sm border border-red-200 p-5">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-gray-700">Total Defect Rate</span>
-                <AlertCircle size={20} className="text-red-600" />
-              </div>
-              <p className="text-3xl font-bold text-red-600">{defectRate}%</p>
-              <p className="text-xs text-gray-600 mt-1">All defects combined</p>
-            </div>
-
-            {/* Performance Status */}
-            <div className={`rounded-lg shadow-sm border p-5 ${
-              parseFloat(qualityRate) >= 95 
-                ? 'bg-gradient-to-br from-green-50 to-green-100 border-green-200'
-                : parseFloat(qualityRate) >= 90
-                  ? 'bg-gradient-to-br from-blue-50 to-blue-100 border-blue-200'
-                  : 'bg-gradient-to-br from-yellow-50 to-yellow-100 border-yellow-200'
-            }`}>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-gray-700">Performance</span>
-                <TrendingUp size={20} className={
-                  parseFloat(qualityRate) >= 95 ? 'text-green-600' :
-                  parseFloat(qualityRate) >= 90 ? 'text-blue-600' : 'text-yellow-600'
-                } />
-              </div>
-              <p className={`text-2xl font-bold ${
-                parseFloat(qualityRate) >= 95 ? 'text-green-700' :
-                parseFloat(qualityRate) >= 90 ? 'text-blue-700' : 'text-yellow-700'
-              }`}>
-                {parseFloat(qualityRate) >= 95 ? 'Excellent' :
-                 parseFloat(qualityRate) >= 90 ? 'Good' : 'Fair'}
-              </p>
-              <p className="text-xs text-gray-600 mt-1">Overall status</p>
+              <p className="text-3xl font-bold text-gray-900">{producedSum.toLocaleString()}</p>
+              <p className="text-xs text-gray-600 mt-1">Produced units for {selectedTyreType}</p>
             </div>
           </div>
 
@@ -376,9 +350,7 @@ export function ItemWise() {
                     <th className="px-6 py-3 text-center text-xs font-medium text-yellow-700 uppercase tracking-wider bg-yellow-50 border-r border-gray-300">
                       D (Grade D)
                     </th>
-                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider">
-                      Defect %
-                    </th>
+                
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200">
@@ -396,15 +368,7 @@ export function ItemWise() {
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-center bg-yellow-50 border-r border-gray-200">
                         <span className="text-yellow-700 font-semibold">{item.gradeD.toLocaleString()}</span>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-center">
-                        <span className={`font-semibold ${
-                          item.percentage < 2 ? 'text-green-600' :
-                          item.percentage < 4 ? 'text-yellow-600' :
-                          'text-red-600'
-                        }`}>
-                          {item.percentage.toFixed(1)}%
-                        </span>
-                      </td>
+                      
                     </tr>
                   ))}
                 </tbody>
@@ -417,11 +381,8 @@ export function ItemWise() {
                     <td className="px-6 py-4 text-sm text-center font-bold text-green-700 bg-green-100 border-r border-gray-300">
                       {totalGradeC.toLocaleString()}
                     </td>
-                    <td className="px-6 py-4 text-sm text-center font-bold text-yellow-700 bg-yellow-100 border-r border-gray-300">
+                    <td className="px-6 py-4 text-sm text-center font-bold text-yellow-700 bg-yellow-100 border-gray-300">
                       {totalGradeD.toLocaleString()}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-center font-bold text-red-600">
-                      {defectRate}%
                     </td>
                   </tr>
                 </tfoot>

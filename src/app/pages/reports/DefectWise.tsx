@@ -1,5 +1,8 @@
-import { AlertCircle, Calendar, CheckCircle2, ChevronDown, Package, Search, TrendingUp } from "lucide-react";
+import { AlertCircle, Calendar, ChevronDown, Search } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useMeta } from "../../context/MetaContext";
+import { getProductionReportFilter } from "../../services/productionService";
+import { normalizeDefectKey } from "../../utils/reportUtils";
 
 interface TyreTypeData {
   tyreType: string;
@@ -17,17 +20,12 @@ export function DefectWise() {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [showResults, setShowResults] = useState(false);
 
-  // Available defect types
-  const defectTypes = [
-    { code: 'Air.Ble', name: 'Air Bubble' },
-    { code: 'S.W', name: 'Sidewall' },
-    { code: 'Tr.Cr', name: 'Tread Crack' },
-    { code: 'C.Mr', name: 'Center Marking' },
-    { code: 'L.Dam', name: 'Lateral Damage' },
-    { code: 'Un.Bl', name: 'Under Blister' },
-    { code: 'Bead.Dmg', name: 'Bead Damage' },
-    { code: 'Surf.Def', name: 'Surface Defect' },
-  ];
+  // get metadata from context (loaded from localStorage)
+  const { tyreItems, defects } = useMeta();
+
+  // Defect types come from meta (localStorage)
+  // `defects` is provided by `useMeta` and has shape [{id, name}, ...]
+  const defectTypes = (defects || []).map((d: any) => ({ code: d.name, name: d.name }));
 
   // Filter defect types based on search
   const filteredDefectTypes = useMemo(() => {
@@ -37,32 +35,74 @@ export function DefectWise() {
     );
   }, [searchTerm]);
 
-  // Mock data for tire types by defect
+  // Mock data for tire types by defect — kept as fallback/test data
   const getTyreDataByDefect = (defectType: string): TyreTypeData[] => {
-    // This would normally come from your backend based on the selected defect type
     return [
       { tyreType: '195/65R15', totalTyres: 1250, gradeC: 1050, gradeD: 200 },
       { tyreType: '205/55R16', totalTyres: 980, gradeC: 820, gradeD: 160 },
       { tyreType: '225/45R17', totalTyres: 1420, gradeC: 980, gradeD: 440 },
-      { tyreType: '235/60R18', totalTyres: 890, gradeC: 750, gradeD: 140 },
-      { tyreType: '245/40R19', totalTyres: 1150, gradeC: 850, gradeD: 300 },
-      { tyreType: '215/60R16', totalTyres: 1320, gradeC: 1120, gradeD: 200 },
-      { tyreType: '185/70R14', totalTyres: 760, gradeC: 540, gradeD: 220 },
-      { tyreType: '255/35R20', totalTyres: 540, gradeC: 460, gradeD: 80 },
     ];
   };
 
   const [tyreData, setTyreData] = useState<TyreTypeData[]>([]);
+  // tyre metadata available from earlier `useMeta` call above
 
   const handleSearch = () => {
     if (!selectedDefect) {
       alert('Please select a defect type');
       return;
     }
-    setShowResults(true);
-    const data = getTyreDataByDefect(selectedDefect);
-    setTyreData(data);
-    console.log('Searching for defect type:', selectedDefect, 'from:', dateFrom, 'to:', dateTo);
+    (async () => {
+      try {
+        setShowResults(true);
+        const isoFrom = `${dateFrom}T00:00:00Z`;
+        const isoTo = `${dateTo}T23:59:59Z`;
+        const resp = await getProductionReportFilter({ dateFrom: isoFrom, dateTo: isoTo, defect: selectedDefect });
+        const batches = Array.isArray(resp) ? resp : resp?.items ?? [];
+
+        // collect all tyre items from batches and records
+        const items: any[] = [];
+        for (const b of batches) {
+          if (Array.isArray(b.tyreItems)) items.push(...b.tyreItems);
+          if (Array.isArray((b as any).records)) {
+            for (const r of (b as any).records) {
+              if (Array.isArray(r.tyreItems)) items.push(...r.tyreItems);
+            }
+          }
+        }
+
+        const targetKey = normalizeDefectKey(selectedDefect || '');
+
+        // aggregate by tyreTypeId
+        const map: Record<string, { total: number; gradeC: number; gradeD: number }> = {};
+        for (const it of items) {
+          const raw = (it.defect || '').toString();
+          const key = normalizeDefectKey(raw);
+          if (!key) continue;
+          if (targetKey && key !== targetKey) continue;
+          const tid = it.tyreTypeId ?? 'unknown';
+          const entry = map[tid] || { total: 0, gradeC: 0, gradeD: 0 };
+          entry.total += 1;
+          const cd = (it.cOrD || '').toUpperCase();
+          if (cd === 'C') entry.gradeC += 1;
+          if (cd === 'D') entry.gradeD += 1;
+          map[tid] = entry;
+        }
+
+        // build tyreData aligned to tyreItems metadata
+        const result: TyreTypeData[] = (tyreItems || []).map((meta: any) => {
+          const key = meta.id != null ? String(meta.id) : String(meta.name);
+          const found = map[key] || { total: 0, gradeC: 0, gradeD: 0 };
+          return { tyreType: meta.name, totalTyres: found.total, gradeC: found.gradeC, gradeD: found.gradeD } as TyreTypeData;
+        });
+
+        setTyreData(result);
+        console.log('Searching for defect type:', selectedDefect, 'from:', dateFrom, 'to:', dateTo, 'items:', items.length);
+      } catch (err: any) {
+        console.error('Failed fetching defect-wise report', err);
+        alert(err?.message ?? String(err));
+      }
+    })();
   };
 
   const handleDurationChange = (selectedDuration: string) => {
@@ -97,7 +137,8 @@ export function DefectWise() {
   };
 
   const handleDefectSelect = (defect: { code: string; name: string }) => {
-    setSelectedDefect(`${defect.code} (${defect.name})`);
+    // store selected defect name (from meta)
+    setSelectedDefect(defect.name);
     setIsDropdownOpen(false);
     setSearchTerm('');
   };
@@ -162,13 +203,19 @@ export function DefectWise() {
                           key={index}
                           onClick={() => handleDefectSelect(defect)}
                           className={`w-full text-left px-4 py-2 hover:bg-blue-50 transition-colors ${
-                            selectedDefect === `${defect.code} (${defect.name})` 
-                              ? 'bg-blue-100 text-blue-700 font-medium' 
-                              : 'text-gray-700'
-                          }`}
+                                  selectedDefect === defect.name
+                                    ? 'bg-blue-100 text-blue-700 font-medium'
+                                    : 'text-gray-700'
+                                }`}
                         >
-                          <span className="font-medium">{defect.code}</span>
-                          <span className="text-gray-600 ml-2">({defect.name})</span>
+                          {defect.code === defect.name ? (
+                            <span className="font-medium">{defect.name}</span>
+                          ) : (
+                            <>
+                              <span className="font-medium">{defect.code}</span>
+                              <span className="text-gray-600 ml-2">({defect.name})</span>
+                            </>
+                          )}
                         </button>
                       ))
                     ) : (
@@ -235,64 +282,6 @@ export function DefectWise() {
       {/* Results Section */}
       {showResults && (
         <div>
-          {/* Summary Statistics - Above Table */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-            {/* Total Production */}
-            <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg shadow-sm border border-blue-200 p-5">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-gray-700">Total Affected</span>
-                <Package size={20} className="text-blue-600" />
-              </div>
-              <p className="text-3xl font-bold text-gray-900">{totalTyres.toLocaleString()}</p>
-              <p className="text-xs text-gray-600 mt-1">Tires with {selectedDefect}</p>
-            </div>
-
-            {/* Grade C Count */}
-            <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-lg shadow-sm border border-green-200 p-5">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-gray-700">Grade C</span>
-                <CheckCircle2 size={20} className="text-green-600" />
-              </div>
-              <p className="text-3xl font-bold text-green-600">{totalGradeC.toLocaleString()}</p>
-              <p className="text-xs text-gray-600 mt-1">{qualityRate}% of total</p>
-            </div>
-
-            {/* Grade D Count */}
-            <div className="bg-gradient-to-br from-yellow-50 to-yellow-100 rounded-lg shadow-sm border border-yellow-200 p-5">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-gray-700">Grade D</span>
-                <AlertCircle size={20} className="text-yellow-600" />
-              </div>
-              <p className="text-3xl font-bold text-yellow-600">{totalGradeD.toLocaleString()}</p>
-              <p className="text-xs text-gray-600 mt-1">{defectRate}% of total</p>
-            </div>
-
-            {/* Performance Status */}
-            <div className={`rounded-lg shadow-sm border p-5 ${
-              parseFloat(qualityRate) >= 95 
-                ? 'bg-gradient-to-br from-green-50 to-green-100 border-green-200'
-                : parseFloat(qualityRate) >= 90
-                  ? 'bg-gradient-to-br from-blue-50 to-blue-100 border-blue-200'
-                  : 'bg-gradient-to-br from-red-50 to-red-100 border-red-200'
-            }`}>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-gray-700">Performance</span>
-                <TrendingUp size={20} className={
-                  parseFloat(qualityRate) >= 95 ? 'text-green-600' :
-                  parseFloat(qualityRate) >= 90 ? 'text-blue-600' : 'text-red-600'
-                } />
-              </div>
-              <p className={`text-2xl font-bold ${
-                parseFloat(qualityRate) >= 95 ? 'text-green-700' :
-                parseFloat(qualityRate) >= 90 ? 'text-blue-700' : 'text-red-700'
-              }`}>
-                {parseFloat(qualityRate) >= 95 ? 'Excellent' :
-                 parseFloat(qualityRate) >= 90 ? 'Good' : 'Poor'}
-              </p>
-              <p className="text-xs text-gray-600 mt-1">C grade ratio</p>
-            </div>
-          </div>
-
           {/* Main Data Table */}
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
             <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
@@ -324,22 +313,29 @@ export function DefectWise() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200">
-                  {tyreData.map((item, index) => (
-                    <tr key={index} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 border-r border-gray-200">
-                        {item.tyreType}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-center text-gray-900 font-semibold border-r border-gray-200">
-                        {item.totalTyres.toLocaleString()}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-center bg-green-50 border-r border-gray-200">
-                        <span className="text-green-700 font-semibold">{item.gradeC.toLocaleString()}</span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-center bg-yellow-50">
-                        <span className="text-yellow-700 font-semibold">{item.gradeD.toLocaleString()}</span>
-                      </td>
-                    </tr>
-                  ))}
+                  {(tyreItems || []).map((meta, index) => {
+                    // try to find counts for this meta entry from tyreData
+                    const found = tyreData.find(td => String(td.tyreType) === String(meta.name) || String(td.tyreType) === String(meta.id));
+                    const total = found ? found.totalTyres : 0;
+                    const gc = found ? found.gradeC : 0;
+                    const gd = found ? found.gradeD : 0;
+                    return (
+                      <tr key={index} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 border-r border-gray-200">
+                          {meta.name}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-center text-gray-900 font-semibold border-r border-gray-200">
+                          {total.toLocaleString()}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-center bg-green-50 border-r border-gray-200">
+                          <span className="text-green-700 font-semibold">{gc.toLocaleString()}</span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-center bg-yellow-50">
+                          <span className="text-yellow-700 font-semibold">{gd.toLocaleString()}</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
                 <tfoot className="bg-blue-50 border-t-2 border-blue-300">
                   <tr>

@@ -81,10 +81,11 @@ export function computeAggregatesFromBatches(batches: ProductionBatchApi[] = [])
     }
   }
 
-  const denom = totalTyres + defectCount;
-  const qualityRate = denom > 0 ? totalTyres / denom : 0;
+  // Ensure defectCount does not exceed totalTyres and compute rates
+  const effectiveDefectCount = Math.min(defectCount, totalTyres);
+  const qualityRate = totalTyres > 0 ? (totalTyres - effectiveDefectCount) / totalTyres : 0;
   const qualityRatePct = qualityRate * 100;
-  const defectRatePct = 100 - qualityRatePct;
+  const defectRatePct = totalTyres > 0 ? (effectiveDefectCount / totalTyres) * 100 : 0;
   const performancePct = totalPlanned > 0 ? (totalActual / totalPlanned) * 100 : 0;
   // debug: log totals
 //   console.log('[reportUtils] totalTyres:', totalTyres);
