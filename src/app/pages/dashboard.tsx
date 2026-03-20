@@ -1,6 +1,6 @@
 import { AlertCircle, Calendar, CheckCircle2, Factory, TrendingUp } from "lucide-react";
-import RevenueStats from "../component/RevenueStats";
 import { ProductionStatus } from "../component/ProductionStatus";
+import RevenueStats from "../component/RevenueStats";
 import { StatsCard } from "../component/StatsCard";
 
 function Dashboard() {
