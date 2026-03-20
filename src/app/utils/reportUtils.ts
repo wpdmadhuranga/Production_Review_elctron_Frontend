@@ -111,16 +111,23 @@ export function normalizeDefectKey(raw: string): string {
   const key = s.replace(/[^a-z0-9]/g, '');
   switch (key) {
     case 'airbubble':
+    case 'airble':
+    case 'airbl':
       return 'airBubble';
     case 'sidewall':
+    case 'sw':
       return 'sidewall';
     case 'treadcrack':
+    case 'trcr':
       return 'treadCrack';
     case 'centermarking':
+    case 'cmr':
       return 'centerMarking';
     case 'lateraldamage':
+    case 'ldam':
       return 'lateralDamage';
     case 'underblister':
+    case 'unbl':
       return 'underBlister';
     case 'ucure':
     case 'undercure':

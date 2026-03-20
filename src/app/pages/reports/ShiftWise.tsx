@@ -5,12 +5,7 @@ import { getProductionReportFilter } from "../../services/productionService";
 import { normalizeDefectKey } from "../../utils/reportUtils";
 
 interface DefectBreakdown {
-  airBubble: number;
-  sidewall: number;
-  treadCrack: number;
-  centerMarking: number;
-  lateralDamage: number;
-  underBlister: number;
+  [defectKey: string]: number;
 }
 
 interface TyreItem {
@@ -36,16 +31,41 @@ export function ShiftWise() {
   const norm = (v: any) => String(v ?? '').trim().toLowerCase();
   const getShiftCode = (selected: string) => {
     if (selected === 'all') return undefined;
-    const found = (shifts || []).find((s: any) => norm(s?.code) === norm(selected) || norm(s?.name) === norm(selected));
-    return (found?.code ?? found?.name ?? selected) as string;
+    const found = (shifts || []).find((s: any) => {
+      const code = (s as any).code;
+      return norm(code) === norm(selected) || norm(s?.name) === norm(selected);
+    });
+    return ((found as any)?.code ?? (found as any)?.name ?? selected) as string;
   };
 
-  const defectKeys = ['airBubble', 'sidewall', 'treadCrack', 'centerMarking', 'lateralDamage', 'underBlister'];
-  const defectCols = defectKeys.map((k) => {
-    const m = (defects || []).find((d: any) => normalizeDefectKey(d.name) === k);
-    const fallback: Record<string, string> = { airBubble: 'Air.Ble', sidewall: 'S.W', treadCrack: 'Tr.Cr', centerMarking: 'C.Mr', lateralDamage: 'L.Dam', underBlister: 'Un.Bl' };
-    return { key: k, label: m?.name ?? fallback[k] };
-  });
+  const canonicalDefectOrder = ['airBubble', 'sidewall', 'treadCrack', 'centerMarking', 'lateralDamage', 'underBlister', 'underCure', 'overCure'];
+  const fallbackDefectLabels: Record<string, string> = {
+    airBubble: 'Air.Ble',
+    sidewall: 'S.W',
+    treadCrack: 'Tr.Cr',
+    centerMarking: 'C.Mr',
+    lateralDamage: 'L.Dam',
+    underBlister: 'Un.Bl',
+    underCure: 'U.Cure',
+    overCure: 'Ov.Cure',
+  };
+  const defectColMap = new Map<string, string>();
+  for (const d of defects || []) {
+    const key = normalizeDefectKey(d?.name || '');
+    if (!key) continue;
+    if (!defectColMap.has(key)) defectColMap.set(key, d?.name || fallbackDefectLabels[key] || key);
+  }
+  if (defectColMap.size === 0) {
+    for (const key of canonicalDefectOrder) {
+      defectColMap.set(key, fallbackDefectLabels[key] || key);
+    }
+  } else {
+    for (const key of canonicalDefectOrder) {
+      if (defectColMap.has(key)) continue;
+      defectColMap.set(key, fallbackDefectLabels[key] || key);
+    }
+  }
+  const defectCols = Array.from(defectColMap.entries()).map(([key, label]) => ({ key, label }));
 
   const handleSearch = () => {
     (async () => {
@@ -103,7 +123,7 @@ export function ShiftWise() {
         for (const it of items) {
           const tid = it.tyreTypeId != null ? String(it.tyreTypeId) : (it.tyreTypeName || it.tyreItem || 'unknown');
           if (!map[tid]) {
-            map[tid] = { tyreItem: tid, totalTyres: 0, totalDefects: 0, defects: { airBubble: 0, sidewall: 0, treadCrack: 0, centerMarking: 0, lateralDamage: 0, underBlister: 0 }, gradeC: 0, gradeD: 0 };
+            map[tid] = { tyreItem: tid, totalTyres: 0, totalDefects: 0, defects: {}, gradeC: 0, gradeD: 0 };
           }
           const row = map[tid];
           row.totalTyres += 1;
@@ -112,15 +132,7 @@ export function ShiftWise() {
           if (isReal) {
             row.totalDefects += 1;
             const key = normalizeDefectKey(raw);
-            switch (key) {
-              case 'airBubble': row.defects.airBubble++; break;
-              case 'sidewall': row.defects.sidewall++; break;
-              case 'treadCrack': row.defects.treadCrack++; break;
-              case 'centerMarking': row.defects.centerMarking++; break;
-              case 'lateralDamage': row.defects.lateralDamage++; break;
-              case 'underBlister': row.defects.underBlister++; break;
-              default: break;
-            }
+            row.defects[key] = (row.defects[key] || 0) + 1;
           }
           const cd = (it.cOrD || '').toUpperCase();
           if (cd === 'C') row.gradeC += 1;
@@ -139,7 +151,7 @@ export function ShiftWise() {
               result.push({ ...found, tyreItem: meta.name, totalTyres: total });
               used.add(key);
             } else {
-              result.push({ tyreItem: meta.name, totalTyres: prodMap[key] ?? 0, totalDefects: 0, defects: { airBubble:0, sidewall:0, treadCrack:0, centerMarking:0, lateralDamage:0, underBlister:0 }, gradeC:0, gradeD:0 });
+              result.push({ tyreItem: meta.name, totalTyres: prodMap[key] ?? 0, totalDefects: 0, defects: {}, gradeC:0, gradeD:0 });
             }
           }
         }

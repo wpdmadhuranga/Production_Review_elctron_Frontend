@@ -1,5 +1,5 @@
 import { AlertCircle, Calendar, CheckCircle2, Factory, TrendingUp } from "lucide-react";
-import { ProductionChart } from "../component/ProductionChart";
+import RevenueStats from "../component/RevenueStats";
 import { ProductionStatus } from "../component/ProductionStatus";
 import { StatsCard } from "../component/StatsCard";
 
@@ -11,15 +11,6 @@ function Dashboard() {
     month: 'long', 
     day: 'numeric' 
   });
-
-  const productionData = [
-    { date: 'Mar 1', produced: 4200, target: 4000, defective: 120 },
-    { date: 'Mar 2', produced: 4500, target: 4000, defective: 95 },
-    { date: 'Mar 3', produced: 3800, target: 4000, defective: 150 },
-    { date: 'Mar 4', produced: 4300, target: 4000, defective: 110 },
-    { date: 'Mar 5', produced: 4600, target: 4000, defective: 85 },
-    { date: 'Mar 6', produced: 4400, target: 4000, defective: 100 },
-  ];
 
   const productionLines = [
     { id: '1', name: 'Production Line A', status: 'running' as const, currentProduction: 850, target: 1000, efficiency: 95 },
@@ -97,7 +88,7 @@ function Dashboard() {
         {/* Charts Row */}
         <div className="grid grid-cols-3 gap-6 mb-8">
           <div className="col-span-2">
-            <ProductionChart data={productionData} />
+            <RevenueStats />
           </div>
           <div>
             <ProductionStatus lines={productionLines} />
