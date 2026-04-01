@@ -205,3 +205,138 @@ export function safePercent(value: number): string {
   if (!isFinite(value)) return '0.00';
   return value.toFixed(2);
 }
+
+export interface MonthlySummarySection {
+  from?: string;
+  to?: string;
+  report?: ProductionBatchApi[];
+}
+
+export interface MonthlySummaryResponse {
+  currentMonth?: MonthlySummarySection;
+  previousMonth?: MonthlySummarySection;
+}
+
+export interface DailySeriesPoint {
+  date: string; // YYYY-MM-DD
+  produced: number;
+  target: number;
+  defective: number;
+  performancePct: number;
+  qualityRatePct: number;
+}
+
+export function groupBatchesByDate(batches: ProductionBatchApi[] = []) {
+  const map = new Map<string, ProductionBatchApi[]>();
+  for (const b of batches) {
+    if (!b || !b.date) continue;
+    try {
+      const dt = new Date(b.date);
+      const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+      const arr = map.get(key) || [];
+      arr.push(b);
+      map.set(key, arr);
+    } catch {
+      continue;
+    }
+  }
+  return map;
+}
+
+export function buildDailySeriesFromBatches(batches: ProductionBatchApi[] = []): DailySeriesPoint[] {
+  const map = groupBatchesByDate(batches);
+  const out: DailySeriesPoint[] = Array.from(map.entries()).map(([date, bs]) => {
+    const agg = computeAggregatesFromBatches(bs);
+    return {
+      date,
+      produced: agg.totalTyres,
+      target: agg.totalPlanned,
+      defective: agg.defectCount,
+      performancePct: agg.performancePct,
+      qualityRatePct: agg.qualityRatePct,
+    };
+  });
+  out.sort((a, b) => (a.date < b.date ? -1 : 1));
+  return out;
+}
+
+export function getAggregatesForDate(batches: ProductionBatchApi[] = [], date: string | Date): Aggregates {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const map = groupBatchesByDate(batches);
+  const bs = map.get(key) || [];
+  return computeAggregatesFromBatches(bs);
+}
+
+export function getPreviousMonthSameDayAggregates(prevBatches: ProductionBatchApi[] = [], date: string | Date): Aggregates | null {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  const day = d.getDate();
+  const matched = (prevBatches || []).filter((b) => {
+    if (!b || !b.date) return false;
+    try {
+      const dt = new Date(b.date);
+      return dt.getDate() === day;
+    } catch {
+      return false;
+    }
+  });
+  if (!matched || matched.length === 0) return null;
+  return computeAggregatesFromBatches(matched);
+}
+
+export interface ProductionLineSummary {
+  id: string;
+  name: string;
+  status: 'running' | 'idle' | 'maintenance' | 'error';
+  currentProduction: number;
+  target: number;
+  efficiency: number; // 0-100
+}
+
+function deriveLineStatus(efficiency: number, target: number, currentProduction: number) {
+  if (!target || target === 0) {
+    return currentProduction === 0 ? 'idle' : 'running';
+  }
+  if (efficiency >= 90) return 'running';
+  if (efficiency >= 60) return 'maintenance';
+  return 'error';
+}
+
+export function buildLineSummariesForDate(batches: ProductionBatchApi[] = [], date: string | Date): ProductionLineSummary[] {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const map = groupBatchesByDate(batches);
+  const bs = map.get(key) || [];
+  const lines = new Map<string, ProductionLineSummary>();
+
+  for (const b of bs) {
+    if (!Array.isArray((b as any).records)) continue;
+    for (const r of (b as any).records) {
+      const lid = String(r.lineNumberId ?? r.lineNumber ?? 'unknown');
+      const name = r.lineNumber ?? `Line ${lid}`;
+      const row = lines.get(lid) || { id: lid, name, status: 'idle' as const, currentProduction: 0, target: 0, efficiency: 0 };
+      row.currentProduction += Number(r.actualTotalTyres || 0);
+      row.target += Number(r.plannedTotalTyres || 0);
+      // count defects in tyreItems for this record
+      if (Array.isArray(r.tyreItems)) {
+        for (const it of r.tyreItems) {
+          const raw = (it.defect || '').toString().trim();
+          const isRealDefect = raw !== '' && raw.toLowerCase() !== 'none';
+          if (isRealDefect) {
+            // no-op for now; defects could be aggregated per-line if needed
+          }
+        }
+      }
+      lines.set(lid, row);
+    }
+  }
+
+  const out: ProductionLineSummary[] = [];
+  for (const v of lines.values()) {
+    const eff = v.target > 0 ? (v.currentProduction / v.target) * 100 : 0;
+    v.efficiency = Number.isFinite(eff) ? Math.round(eff * 100) / 100 : 0;
+    v.status = deriveLineStatus(v.efficiency, v.target, v.currentProduction) as ProductionLineSummary['status'];
+    out.push(v);
+  }
+  return out;
+}

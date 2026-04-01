@@ -79,3 +79,44 @@ export async function getProductionReportFilter(options: {
 
   return res.json();
 }
+
+export async function getProductionMonthlySummary(forceRefresh = false): Promise<any> {
+  const STORAGE_KEY = 'production.monthlySummary.v1';
+
+  // return cached value if present (unless forceRefresh)
+  if (!forceRefresh) {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const raw = window.localStorage.getItem(STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          return parsed.data || parsed;
+        }
+      }
+    } catch (e) {
+      // ignore cache read errors
+    }
+  }
+
+  const url = `${BASE}/production-report/monthly-summary`;
+
+  const res = await authFetch(url, { method: 'GET' });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Production monthly summary failed: ${res.status} ${res.statusText} - ${text}`);
+  }
+
+  const json = await res.json();
+
+  // cache the result
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ data: json, fetchedAt: new Date().toISOString() }));
+    }
+  } catch (e) {
+    // ignore cache set errors
+  }
+
+  return json;
+}

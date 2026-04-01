@@ -1,23 +1,69 @@
 import { AlertCircle, Calendar, CheckCircle2, Factory, TrendingUp } from "lucide-react";
+import { useEffect, useState } from "react";
+import MonthlyStats from "../component/MonthlyStats";
 import { ProductionStatus } from "../component/ProductionStatus";
 import RevenueStats from "../component/RevenueStats";
 import { StatsCard } from "../component/StatsCard";
+import { getProductionMonthlySummary } from "../services/productionService";
+import {
+  buildDailySeriesFromBatches,
+  buildLineSummariesForDate,
+  getAggregatesForDate,
+  getPreviousMonthSameDayAggregates,
+} from "../utils/reportUtils";
 
 function Dashboard() {
   // Mock data for the dashboard
-  const currentDate = new Date().toLocaleDateString('en-US', { 
-    weekday: 'long', 
-    year: 'numeric', 
-    month: 'long', 
-    day: 'numeric' 
+  const currentDate = new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
   });
 
-  const productionLines = [
-    { id: '1', name: 'Production Line A', status: 'running' as const, currentProduction: 850, target: 1000, efficiency: 95 },
-    { id: '2', name: 'Production Line B', status: 'running' as const, currentProduction: 720, target: 1000, efficiency: 88 },
-    { id: '3', name: 'Production Line C', status: 'maintenance' as const, currentProduction: 420, target: 1000, efficiency: 65 },
-    { id: '4', name: 'Production Line D', status: 'idle' as const, currentProduction: 0, target: 1000, efficiency: 0 },
-  ];
+  const [dailySeries, setDailySeries] = useState<any[]>([]);
+  const [productionLines, setProductionLines] = useState<any[]>([]);
+  const [todayAgg, setTodayAgg] = useState<any | null>(null);
+  const [lastMonthAgg, setLastMonthAgg] = useState<any | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const STORAGE_KEY = 'production.monthlySummary.v1';
+        let resp = await getProductionMonthlySummary();
+
+        // if service returned nothing or empty report, try reading raw cache as fallback
+        if (!resp || ((resp.currentMonth?.report?.length || 0) === 0 && (resp.previousMonth?.report?.length || 0) === 0)) {
+          try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              resp = parsed.data || parsed || resp;
+            }
+          } catch (e) {
+            // ignore parse errors
+          }
+        }
+        const currentBatches = resp?.currentMonth?.report || [];
+        const previousBatches = resp?.previousMonth?.report || [];
+
+        const series = buildDailySeriesFromBatches(currentBatches || []);
+        setDailySeries(series);
+
+        const today = new Date();
+        const todayAggregates = getAggregatesForDate(currentBatches, today);
+        setTodayAgg(todayAggregates);
+
+        const prevAgg = getPreviousMonthSameDayAggregates(previousBatches, today);
+        setLastMonthAgg(prevAgg);
+
+        const lines = buildLineSummariesForDate(currentBatches || [], today);
+        setProductionLines(lines);
+      } catch (err) {
+        console.error('Failed to load monthly summary', err);
+      }
+    })();
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -53,33 +99,49 @@ function Dashboard() {
         <div className="grid grid-cols-4 gap-6 mb-8">
           <StatsCard
             title="Total Production Today"
-            value="26,800"
+            value={todayAgg ? (todayAgg.totalTyres || 0).toLocaleString() : '—'}
             icon={Factory}
-            trend={{ value: 12.5, isPositive: true }}
+            trend={
+              lastMonthAgg && lastMonthAgg.totalTyres
+                ? { value: Math.round(((todayAgg.totalTyres - lastMonthAgg.totalTyres) / Math.max(1, lastMonthAgg.totalTyres)) * 100 * 10) / 10, isPositive: (todayAgg.totalTyres - lastMonthAgg.totalTyres) >= 0 }
+                : undefined
+            }
             iconBgColor="bg-blue-100"
             iconColor="text-blue-600"
           />
           <StatsCard
             title="Quality Rate"
-            value="97.2%"
+            value={todayAgg ? `${(todayAgg.qualityRatePct || 0).toFixed(2)}%` : '—'}
             icon={CheckCircle2}
-            trend={{ value: 2.3, isPositive: true }}
+            trend={
+              lastMonthAgg
+                ? { value: Math.round(((todayAgg.qualityRatePct || 0) - (lastMonthAgg.qualityRatePct || 0)) * 10) / 10, isPositive: (todayAgg.qualityRatePct || 0) - (lastMonthAgg.qualityRatePct || 0) >= 0 }
+                : undefined
+            }
             iconBgColor="bg-green-100"
             iconColor="text-green-600"
           />
           <StatsCard
             title="Total Defects"
-            value="700"
+            value={todayAgg ? (todayAgg.defectCount || 0).toLocaleString() : '—'}
             icon={AlertCircle}
-            trend={{ value: 5.1, isPositive: false }}
+            trend={
+              lastMonthAgg && lastMonthAgg.defectCount
+                ? { value: Math.round(((todayAgg.defectCount - lastMonthAgg.defectCount) / Math.max(1, lastMonthAgg.defectCount)) * 100 * 10) / 10, isPositive: (todayAgg.defectCount - lastMonthAgg.defectCount) <= 0 }
+                : undefined
+            }
             iconBgColor="bg-red-100"
             iconColor="text-red-600"
           />
           <StatsCard
             title="Efficiency"
-            value="92.5%"
+            value={todayAgg ? `${(todayAgg.performancePct || 0).toFixed(2)}%` : '—'}
             icon={TrendingUp}
-            trend={{ value: 3.8, isPositive: true }}
+            trend={
+              lastMonthAgg
+                ? { value: Math.round(((todayAgg.performancePct || 0) - (lastMonthAgg.performancePct || 0)) * 10) / 10, isPositive: (todayAgg.performancePct || 0) - (lastMonthAgg.performancePct || 0) >= 0 }
+                : undefined
+            }
             iconBgColor="bg-purple-100"
             iconColor="text-purple-600"
           />
@@ -87,12 +149,17 @@ function Dashboard() {
 
         {/* Charts Row */}
         <div className="grid grid-cols-3 gap-6 mb-8">
-          <div className="col-span-2">
-            <RevenueStats />
+          <div className="col-span-2 space-y-6">
+            <RevenueStats data={dailySeries.map((d: any) => ({ date: d.date, total: d.produced, qualityRatePct: d.qualityRatePct }))} />
           </div>
           <div>
             <ProductionStatus lines={productionLines} />
           </div>
+        </div>
+
+        {/* Monthly Summary */}
+        <div className="mb-8">
+          <MonthlyStats />
         </div>
       </main>
     </div>
