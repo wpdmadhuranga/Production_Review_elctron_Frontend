@@ -27,12 +27,11 @@ function Dashboard() {
   const [lastMonthAgg, setLastMonthAgg] = useState<any | null>(null);
 
   useEffect(() => {
-    (async () => {
+    const loadDashboardData = async (forceRefresh = false) => {
       try {
         const STORAGE_KEY = 'production.monthlySummary.v1';
-        let resp = await getProductionMonthlySummary();
+        let resp = forceRefresh ? await getProductionMonthlySummary(true) : await getProductionMonthlySummary();
 
-        // if service returned nothing or empty report, try reading raw cache as fallback
         if (!resp || ((resp.currentMonth?.report?.length || 0) === 0 && (resp.previousMonth?.report?.length || 0) === 0)) {
           try {
             const raw = localStorage.getItem(STORAGE_KEY);
@@ -44,25 +43,26 @@ function Dashboard() {
             // ignore parse errors
           }
         }
+
         const currentBatches = resp?.currentMonth?.report || [];
         const previousBatches = resp?.previousMonth?.report || [];
 
-        const series = buildDailySeriesFromBatches(currentBatches || []);
-        setDailySeries(series);
+        setDailySeries(buildDailySeriesFromBatches(currentBatches || []));
 
         const today = new Date();
-        const todayAggregates = getAggregatesForDate(currentBatches, today);
-        setTodayAgg(todayAggregates);
-
-        const prevAgg = getPreviousMonthSameDayAggregates(previousBatches, today);
-        setLastMonthAgg(prevAgg);
-
-        const lines = buildLineSummariesForDate(currentBatches || [], today);
-        setProductionLines(lines);
+        setTodayAgg(getAggregatesForDate(currentBatches, today));
+        setLastMonthAgg(getPreviousMonthSameDayAggregates(previousBatches, today));
+        setProductionLines(buildLineSummariesForDate(currentBatches || [], today));
       } catch (err) {
         console.error('Failed to load monthly summary', err);
       }
-    })();
+    };
+
+    loadDashboardData();
+
+    const handleSummaryUpdate = () => loadDashboardData(true);
+    window.addEventListener('productionMonthlySummaryUpdated', handleSummaryUpdate);
+    return () => window.removeEventListener('productionMonthlySummaryUpdated', handleSummaryUpdate);
   }, []);
 
   return (

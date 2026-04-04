@@ -13,10 +13,18 @@ rules.push({
   ],
 });
 
+const imageRule = {
+  test: /\.(png|jpe?g|gif|svg)$/i,
+  type: 'asset/resource',
+  generator: {
+    filename: 'assets/[name][ext]',
+  },
+};
+
 module.exports = {
   // Put your normal webpack config below here
   module: {
-    rules,
+    rules: [imageRule, ...rules],
   },
   resolve: {
     extensions: ['.js', '.ts', '.tsx', '.jsx', '.json'],

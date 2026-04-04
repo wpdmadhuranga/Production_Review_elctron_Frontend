@@ -1,5 +1,5 @@
-import { Factory } from "lucide-react";
 import { useNavigate } from "react-router";
+import logoSrc from "../../assets/laugfs-tyre-logo.png";
 import LoginForm from "../component/LoginForm";
 
 export function LoginPage() {
@@ -14,10 +14,10 @@ export function LoginPage() {
       <div className="w-full max-w-md">
         {/* Logo/Brand Section */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-600 rounded-2xl mb-4">
-            <Factory className="text-white" size={32} />
+          <div className="inline-flex items-center justify-center w-48 h-48 rounded-[1.5rem] bg-white/90 mb-4 overflow-hidden">
+            <img src={logoSrc} alt="Company logo" className="w-full h-full object-contain" />
           </div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Tyre Manufacturing</h1>
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">LAUGFS Industrial Tyres</h1>
           <p className="text-gray-600">Production Management System</p>
         </div>
 

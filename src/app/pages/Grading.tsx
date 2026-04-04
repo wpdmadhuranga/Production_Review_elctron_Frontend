@@ -2,7 +2,8 @@ import { CalendarIcon, CheckCircle, Save, Trash2, X } from "lucide-react";
 import React, { useState } from "react";
 import { useAuth } from "../auth/useAuth";
 import { useMeta } from "../context/MetaContext";
-import { batchCreateProductionRecords } from "../services/productionService";
+import { batchCreateProductionRecords, getProductionMonthlySummary } from "../services/productionService";
+
 
 interface MetaItem { id: number; name: string }
 
@@ -74,17 +75,75 @@ interface SummaryEntry {
   summaryEfficiency: number;
 }
 
-const EMPTY_DEFECT_FORM = {
-  date: new Date().toISOString().split('T')[0],
-  tyreItem: '',
-  productionLine: '',
-  serialNumber: '',
-  moldNumber: '',
-  shift: '',
-  defect: '',
-  defectClass: '' as 'C' | 'D' | '',
-  operatorNumber: '',
-};
+const SRI_LANKA_TIMEZONE = "Asia/Colombo";
+
+function getSriLankaTodayDate(): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: SRI_LANKA_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+
+  const byType = parts.reduce((acc, part) => {
+    if (part.type) {
+      acc[part.type] = part.value;
+    }
+    return acc;
+  }, {} as Record<string, string>);
+
+  return `${byType.year}-${byType.month}-${byType.day}`;
+}
+
+function formatAsSriLankaDateTime(value: string | Date): string {
+  const date = typeof value === "string" ? new Date(value) : value;
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: SRI_LANKA_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+
+  const byType = parts.reduce((acc, part) => {
+    if (part.type) {
+      acc[part.type] = part.value;
+    }
+    return acc;
+  }, {} as Record<string, string>);
+
+  return `${byType.year}-${byType.month}-${byType.day}T${byType.hour}:${byType.minute}:${byType.second}+05:30`;
+}
+
+function toUtcIsoFromSriLankaDate(dateOnly: string): string {
+  // If dateOnly is "2026-04-05", this constructs: "2026-04-05T00:00:00+05:30"
+  // When converted to UTC, this becomes "2026-04-04T18:30:00.000Z" (which is exactly midnight April 5th in Sri Lanka).
+  // If your backend only looks at the UTC date ("2026-04-04") rather than converting it back to Sri Lanka time, 
+  // we must send the local date exactly as "2026-04-05T00:00:00.000Z" to trick the backend into saving the correct day.
+  const date = new Date(dateOnly);
+  return date.toISOString();
+}
+
+function createEmptyDefectForm() {
+  return {
+    date: getSriLankaTodayDate(),
+    tyreItem: '',
+    productionLine: '',
+    serialNumber: '',
+    moldNumber: '',
+    shift: '',
+    defect: '',
+    defectClass: '' as 'C' | 'D' | '',
+    operatorNumber: '',
+  };
+}
 
 export function Grading() {
   const [activeTab, setActiveTab] = useState<'defects' | 'products' | 'summary'>('defects');
@@ -101,7 +160,7 @@ export function Grading() {
   };
 
   // Defect Form State
-  const [defectForm, setDefectForm] = useState(EMPTY_DEFECT_FORM);
+  const [defectForm, setDefectForm] = useState(createEmptyDefectForm);
   const [defectEntries, setDefectEntries] = useState<DefectEntry[]>([]);
 
   // Product Form State
@@ -122,7 +181,7 @@ export function Grading() {
     totalDefects: '',
     qualityRate: '',
     efficiency: '',
-    date: new Date().toISOString().split('T')[0],
+    date: getSriLankaTodayDate(),
     linePlans: [] as string[],
     lineActuals: [] as string[],
   });
@@ -133,11 +192,19 @@ export function Grading() {
     const { date, tyreItem, productionLine, serialNumber, moldNumber, shift, defect, defectClass, operatorNumber } = defectForm;
     const newEntry: DefectEntry = {
       id: Date.now().toString(),
-      date, tyreItem, productionLine, serialNumber, moldNumber, shift, defect, defectClass, operatorNumber,
-      timestamp: new Date().toLocaleString(),
+      date,
+      tyreItem,
+      productionLine,
+      serialNumber,
+      moldNumber,
+      shift,
+      defect,
+      defectClass,
+      operatorNumber,
+      timestamp: formatAsSriLankaDateTime(new Date()),
     };
     setDefectEntries([...defectEntries, newEntry]);
-    setDefectForm(EMPTY_DEFECT_FORM);
+    setDefectForm(createEmptyDefectForm());
   };
 
   // Add Product Entry
@@ -189,7 +256,7 @@ export function Grading() {
       totalDefects: '', 
       qualityRate: '', 
       efficiency: '',
-      date: new Date().toISOString().split('T')[0],
+      date: getSriLankaTodayDate(),
       linePlans: [],
       lineActuals: [],
     });
@@ -215,6 +282,28 @@ export function Grading() {
         : sum;
     }, 0);
 
+  const updateMonthlySummaryCache = async () => {
+    const STORAGE_KEY = 'production.monthlySummary.v1';
+    try {
+      const resp = await getProductionMonthlySummary(true);
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) {
+          window.localStorage.setItem(
+            STORAGE_KEY,
+            JSON.stringify({ data: resp, fetchedAt: new Date().toISOString() })
+          );
+          window.dispatchEvent(new Event('productionMonthlySummaryUpdated'));
+        }
+      } catch (cacheError) {
+        console.warn("Failed to update monthly summary cache", cacheError);
+      }
+      return resp;
+    } catch (refreshError) {
+      console.warn("Failed to refresh monthly summary", refreshError);
+      return null;
+    }
+  };
+
   // Submit all records
   const submitAllRecords = async () => {
     if (productEntries.length === 0) {
@@ -234,7 +323,7 @@ export function Grading() {
     }
 
     const shift = summaryForm.shift || (shifts[0]?.name ?? "Morning");
-    const productionDateIso = new Date(summaryForm.date).toISOString();
+    const productionDateIso = toUtcIsoFromSriLankaDate(summaryForm.date);
 
     const lookupMetaId = (list: MetaItem[], value: string | number): number => {
       const match = list.find(
@@ -308,6 +397,7 @@ export function Grading() {
       setDefectEntries([]);
       setProductEntries([]);
       setSummaryEntries([]);
+      await updateMonthlySummaryCache();
     } catch (err: any) {
       console.error("Batch create failed", err);
       alert(`Failed to submit records: ${err?.message ?? err}`);
@@ -555,7 +645,7 @@ export function Grading() {
               {/* Save & Clear buttons */}
               <div className="flex gap-3 justify-end mb-4">
                 <button
-                  onClick={() => setDefectForm(EMPTY_DEFECT_FORM)}
+                  onClick={() => setDefectForm(createEmptyDefectForm)}
                   className="flex items-center gap-2 px-5 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
                 >
                   <X size={16} /> Clear

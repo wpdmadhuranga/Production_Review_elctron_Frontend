@@ -1,6 +1,8 @@
-import { Award, ChevronDown, ChevronRight, Factory, FileText, LayoutDashboard } from "lucide-react";
+import { Award, ChevronDown, ChevronRight, FileText, LayoutDashboard } from "lucide-react";
 import { useState } from "react";
 import { NavLink } from "react-router";
+import logoSrc from "../../assets/laugfs-tyre-logo.png";
+import { useAuth } from "../auth/useAuth";
 
 interface SubMenuItem {
   title: string;
@@ -16,6 +18,7 @@ interface MenuItem {
 
 export function Sidebar() {
   const [isProductionReportsOpen, setIsProductionReportsOpen] = useState(false);
+  const { isAdmin } = useAuth();
 
   const menuItems: MenuItem[] = [
     {
@@ -23,7 +26,7 @@ export function Sidebar() {
       icon: LayoutDashboard,
       path: "/dashboard",
     },
-    {
+    !isAdmin && {
       title: "Grading",
       icon: Award,
       path: "/grading",
@@ -38,15 +41,15 @@ export function Sidebar() {
         { title: "Shift Wise", path: "/production-reports/shift-wise" },
       ],
     },
-  ];
+  ].filter(Boolean) as MenuItem[];
 
   return (
     <aside className="w-64 bg-gray-900 min-h-screen flex flex-col">
       {/* Logo Section */}
       <div className="p-6 border-b border-gray-800">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center">
-            <Factory className="text-white" size={24} />
+          <div className="w-16 h-16 rounded-lg overflow-hidden bg-white/10">
+            <img src={logoSrc} alt="Company logo" className="w-full h-full object-contain" />
           </div>
           <div>
             <h2 className="text-white font-bold text-lg">TyreTech</h2>
