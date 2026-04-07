@@ -1,5 +1,5 @@
 import { API_BASE_URL } from "../../config";
-import { authFetch, getToken } from "./authService";
+import { authFetch, getApiBaseUrl, getToken } from "./authService";
 
 export interface ProductionRecordProductEntry {
   tyreTypeId: number;
@@ -73,12 +73,13 @@ function buildSocketUrl(origin: string, token: string | null): string {
   return url.toString();
 }
 
-function resolveMonthlySummarySocketUrls() {
+async function resolveMonthlySummarySocketUrls() {
   const token = getToken();
   const urls: string[] = [];
+  const resolvedBaseUrl = (await getApiBaseUrl()) || API_BASE_URL;
 
   try {
-    const apiUrl = new URL(API_BASE_URL);
+    const apiUrl = new URL(resolvedBaseUrl);
     const isLocalHost = apiUrl.hostname === "localhost" || apiUrl.hostname === "127.0.0.1";
 
     if (isLocalHost) {
@@ -92,10 +93,9 @@ function resolveMonthlySummarySocketUrls() {
       urls.push(buildSocketUrl(`${alternateProtocol}//${apiUrl.host}`, token));
     }
   } catch {
-    urls.push(buildSocketUrl("ws://localhost:7274", token));
+    // Ignore invalid API base URL and fall back to local dev socket below.
   }
 
-  urls.push(buildSocketUrl("ws://localhost:7274", token));
   urls.push(buildSocketUrl("ws://localhost:5035", token));
 
   return Array.from(new Set(urls));
@@ -110,7 +110,7 @@ async function getProductionMonthlySummaryViaSocket(): Promise<any> {
     throw new Error("WebSocket is not available in this environment");
   }
 
-  const socketUrls = resolveMonthlySummarySocketUrls();
+  const socketUrls = await resolveMonthlySummarySocketUrls();
 
   const connectAndFetch = (socketUrl: string) =>
     new Promise<any>((resolve, reject) => {

@@ -26,6 +26,54 @@ const STORAGE_KEY = "auth_token";
 
 // backend base URL — read from environment (.env → config.ts)
 const BASE_URL = API_BASE_URL;
+let cachedRuntimeBaseUrl: string | null = null;
+
+function trimTrailingSlash(value: string): string {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function isAbsoluteUrl(value: string): boolean {
+  return /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(value);
+}
+
+export async function getApiBaseUrl(): Promise<string> {
+  if (cachedRuntimeBaseUrl) {
+    return cachedRuntimeBaseUrl;
+  }
+
+  const fromBuild = trimTrailingSlash(BASE_URL);
+  if (fromBuild) {
+    cachedRuntimeBaseUrl = fromBuild;
+    return fromBuild;
+  }
+
+  try {
+    const cfg = await window.electronAPI.getConfig();
+    const fromMain = trimTrailingSlash(cfg?.API_BASE_URL || "");
+    if (fromMain) {
+      cachedRuntimeBaseUrl = fromMain;
+      return fromMain;
+    }
+  } catch {
+    // Ignore and fall back to relative URL.
+  }
+
+  return "";
+}
+
+async function resolveApiUrl(input: string): Promise<string> {
+  if (!input || isAbsoluteUrl(input)) {
+    return input;
+  }
+
+  const base = await getApiBaseUrl();
+  if (!base) {
+    return input;
+  }
+
+  const normalizedPath = input.startsWith("/") ? input : `/${input}`;
+  return `${base}${normalizedPath}`;
+}
 
 export function setToken(token: string) {
   localStorage.setItem(STORAGE_KEY, token);
@@ -49,7 +97,8 @@ export function getAuthHeader(): { Authorization?: string } {
  * and the parsed response is returned.
  */
 export async function login(userName: string, password: string): Promise<LoginResponse> {
-  const resp = await fetch(`${BASE_URL}/api/v1/login`, {
+  const loginUrl = await resolveApiUrl("/api/v1/login");
+  const resp = await fetch(loginUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ userName, password }),
@@ -74,5 +123,6 @@ export async function login(userName: string, password: string): Promise<LoginRe
  */
 export async function authFetch(input: RequestInfo, init?: RequestInit) {
   const headers = { ...(init?.headers as any), ...getAuthHeader() };
-  return fetch(input, { ...init, headers });
+  const resolvedInput = typeof input === "string" ? await resolveApiUrl(input) : input;
+  return fetch(resolvedInput, { ...init, headers });
 }

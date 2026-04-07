@@ -2,8 +2,11 @@ const { app, BrowserWindow, session, ipcMain } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const dotenv = require('dotenv');
 const ElectronStore = require('electron-store');
 const keytar = require('keytar');
+
+dotenv.config();
 
 const Store = ElectronStore.default || ElectronStore;
 const store = new Store();
@@ -45,12 +48,12 @@ const createWindow = () => {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
-  const apiBaseUrl = process.env.API_BASE_URL || 'https://localhost:7274';
+  const apiBaseUrl = process.env.API_BASE_URL || '';
   const apiOrigin = (() => {
     try {
       return new URL(apiBaseUrl).origin;
     } catch {
-      return 'https://localhost:7274';
+      return '';
     }
   })();
   const apiSocketOrigin = (() => {
@@ -59,9 +62,24 @@ app.whenReady().then(() => {
       const protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
       return `${protocol}//${parsed.host}`;
     } catch {
-      return 'wss://localhost:7274';
+      return '';
     }
   })();
+  const connectSrc = [
+    "'self'",
+    'https:',
+    'wss:',
+    'http://localhost:3000',
+    'ws://localhost:3000',
+    'http://localhost:5035',
+    'https://localhost:5035',
+    'ws://localhost:5035',
+    'wss://localhost:5035',
+    apiOrigin,
+    apiSocketOrigin,
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   // Allow the renderer to connect to the local backend server.
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -69,7 +87,7 @@ app.whenReady().then(() => {
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [
-          `default-src 'self' 'unsafe-inline' 'unsafe-eval' data:; connect-src 'self' http://localhost:5035 https://localhost:5035 https://localhost:7274 ws://localhost:5035 wss://localhost:5035 ws://localhost:7274 wss://localhost:7274 ${apiOrigin} ${apiSocketOrigin}`,
+          `default-src 'self' 'unsafe-inline' 'unsafe-eval' data:; connect-src ${connectSrc}`,
         ],
       },
     });

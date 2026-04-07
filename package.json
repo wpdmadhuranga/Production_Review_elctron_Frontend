@@ -1,7 +1,7 @@
 {
   "name": "review",
   "productName": "review",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "My Electron application description",
   "main": ".webpack/main",
   "private": true,
@@ -10,6 +10,9 @@
     "package": "electron-forge package",
     "make": "electron-forge make",
     "publish": "electron-forge publish",
+    "clean:release": "powershell -NoProfile -Command \"Remove-Item -Recurse -Force .webpack,dist,out -ErrorAction SilentlyContinue\"",
+    "dist": "npm run clean:release && npm run package && electron-builder",
+    "pack": "electron-builder --dir",
     "lint": "echo \"No linting configured\""
   },
   "keywords": [],
@@ -33,6 +36,7 @@
     "autoprefixer": "^10.4.27",
     "css-loader": "^6.11.0",
     "electron": "40.8.0",
+    "electron-builder": "^24.6.0",
     "node-loader": "^2.1.0",
     "postcss": "^8.5.8",
     "postcss-loader": "^8.2.1",
@@ -40,6 +44,43 @@
     "tailwindcss": "^4.2.1",
     "ts-loader": "^9.5.4",
     "typescript": "^5.9.3"
+  },
+  "build": {
+    "appId": "com.laugfs.tyretech",
+    "productName": "TyreTech",
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      ".webpack/**/*",
+      "**/*",
+      "!**/*.ts",
+      "!**/*.tsx",
+      "!**/*.map",
+      "!src/**/*.ts",
+      "!src/**/*.tsx"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "TyreTech",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico"
+    }
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",
@@ -55,7 +96,9 @@
     "cmdk": "^1.1.1",
     "dotenv": "^17.3.1",
     "electron-squirrel-startup": "^1.0.1",
+    "electron-store": "^11.0.2",
     "embla-carousel-react": "^8.6.0",
+    "keytar": "^7.9.0",
     "lucide-react": "^0.577.0",
     "react": "^19.2.4",
     "react-day-picker": "^9.14.0",
